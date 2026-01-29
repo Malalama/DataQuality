@@ -48,23 +48,24 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Mapping des noms vers les fichiers CV
+# Mapping des noms vers les fichiers CV (adaptés à la structure GitHub)
 CV_FILES_MAPPING = {
-    ("Marie", "DUPONT"): "CV_01_Marie_Dupont.pdf",
-    ("Sophie", "MARTIN"): "CV_02_Sophie_Martin.pdf",
-    ("Thomas", "BERNARD"): "CV_03_Thomas_Bernard.pdf",
-    ("Alexandre", "PETIT"): "CV_04_Alexandre_Petit.pdf",
-    ("Claire", "LEROY"): "CV_05_Claire_Leroy.pdf",
-    ("Emma", "GARCIA"): "CV_06_Emma_Garcia.pdf",
-    ("Jean-Pierre", "MULLER"): "CV_07_Jean_Pierre_Muller.pdf",
+    ("Marie", "DUPONT"): "CV 01 Marie Dupont.pdf",
+    ("Sophie", "MARTIN"): "CV 02 Sophie Martin.pdf",
+    ("Thomas", "BERNARD"): "CV 03 Thomas Bernard.pdf",
+    ("Alexandre", "PETIT"): "CV 04 Alexandre Petit.pdf",
+    ("Claire", "LEROY"): "CV 05 Claire Leroy.pdf",
+    ("Emma", "GARCIA"): "CV 06 Emma Garcia.pdf",
+    ("Jean-Pierre", "MULLER"): "CV 07 Jean Pierre Muller.pdf",
 }
 
-# Chemin des fichiers
-DATA_PATH = Path(r"C:\Users\corte\Downloads\data")
-FICHE_POSTE = DATA_PATH / "DIG - URO - Fiche de poste IDE Annonce.pdf"
-CV_PARSED_FILE = DATA_PATH / "CV_Parsed.xlsx"
+# Chemin des fichiers (adaptés à la structure GitHub)
+DATA_PATH = Path("data")
+CV_PATH = DATA_PATH / "cv" / "raw"
+FICHE_POSTE = DATA_PATH / "jobdescription" / "DIG - URO - Fiche de poste IDE Annonce.pdf"
+CV_PARSED_FILE = DATA_PATH / "cv" / "CV Parsed.xlsx"
 MATCHING_FILE = DATA_PATH / "Compatibilité_CV_et_Fiche_de_poste.xlsx"
-LOGO_FILE = DATA_PATH / "Logo_CHRU_Nancy.png"
+LOGO_FILE = Path("Logo CHRU Nancy.png")
 
 
 def get_score_color(score):
@@ -149,8 +150,11 @@ def load_parsed_cvs():
 
 
 def get_cv_file(prenom, nom):
-    """Retourne le nom du fichier CV pour un candidat"""
-    return CV_FILES_MAPPING.get((prenom, nom), None)
+    """Retourne le chemin complet du fichier CV pour un candidat"""
+    filename = CV_FILES_MAPPING.get((prenom, nom), None)
+    if filename:
+        return CV_PATH / filename
+    return None
 
 
 def style_score(val):
@@ -219,27 +223,12 @@ def view_matching():
                 'Prénom ↓': ('Prénom', False),
                 'Prénom ↑': ('Prénom', True),
                 'Modèle': ('Model', False),
-                'Compétences tech. ↓': ('Compétences techniques', False),
-                'Expérience ↓': ('Expérience', False),
-                'Soft skills ↓': ('Soft skills', False),
             }
-            sort_choice = st.selectbox("🔀 Trier par", list(sort_options.keys()))
+            sort_choice = st.selectbox("📊 Trier par", list(sort_options.keys()))
+            sort_col, sort_asc = sort_options[sort_choice]
         
         with col_f3:
-            # Colonnes à afficher
-            all_score_cols = ['Score global', 'Compétences techniques', 'Contexte métier', 
-                            'Disponibilité', 'Expérience', 'Formation et certifications', 'Soft skills']
-            score_col_labels = {
-                'Score global': 'Score global (/100)',
-                'Compétences techniques': 'Compétences techniques (/30)',
-                'Contexte métier': 'Contexte métier (/10)',
-                'Disponibilité': 'Disponibilité (/5)',
-                'Expérience': 'Expérience (/25)',
-                'Formation et certifications': 'Formation et certifications (/15)',
-                'Soft skills': 'Soft skills (/15)'
-            }
-            default_cols = ['Score global', 'Compétences techniques', 'Expérience', 'Soft skills']
-            selected_score_cols = st.multiselect("📊 Scores à afficher", all_score_cols, default=default_cols)
+            score_min = st.slider("Score minimum", 0, 100, 0)
         
         # Appliquer les filtres
         df_filtered = df_matching.copy()
@@ -247,218 +236,62 @@ def view_matching():
         if model_filter != 'Tous':
             df_filtered = df_filtered[df_filtered['Model'] == model_filter]
         
-        # Appliquer le tri
-        sort_col, sort_asc = sort_options[sort_choice]
+        if score_min > 0:
+            df_filtered = df_filtered[df_filtered['Score global'] >= score_min]
+        
+        # Trier
         df_filtered = df_filtered.sort_values(by=sort_col, ascending=sort_asc)
         
         st.markdown(f"**{len(df_filtered)} résultat(s)**")
         
-        st.markdown("---")
-        
-        # En-tête (sans Compatibilité)
-        header_cols = st.columns([1.5, 1, 1] + [1]*len(selected_score_cols) + [0.5])
-        header_labels = ['Modèle', 'Prénom', 'Nom'] + [score_col_labels.get(c, c) for c in selected_score_cols] + ['CV']
-        for col, header in zip(header_cols, header_labels):
-            col.markdown(f"**{header}**")
-        
-        st.markdown("---")
-        
-        # Lignes du tableau (sans Compatibilité)
+        # Affichage des résultats sous forme de cartes
         for idx, row in df_filtered.iterrows():
-            row_cols = st.columns([1.5, 1, 1] + [1]*len(selected_score_cols) + [0.5])
+            score = row['Score global']
+            color = get_score_color(score)
+            bg_color = get_score_bg_color(score)
             
-            # Modèle
-            row_cols[0].write(row['Model'])
-            
-            # Prénom
-            row_cols[1].write(row['Prénom'])
-            
-            # Nom
-            row_cols[2].write(row['Nom'])
-            
-            # Scores avec couleurs
-            for i, score_col in enumerate(selected_score_cols):
-                score_val = row[score_col]
+            with st.container():
+                col1, col2, col3 = st.columns([3, 1, 1])
                 
-                # Normaliser pour la couleur
-                if score_col == 'Score global':
-                    normalized = score_val
-                else:
-                    max_scores = {
-                        'Compétences techniques': 30,
-                        'Contexte métier': 10,
-                        'Disponibilité': 5,
-                        'Expérience': 25,
-                        'Formation et certifications': 15,
-                        'Soft skills': 15
-                    }
-                    max_val = max_scores.get(score_col, 100)
-                    normalized = (score_val / max_val) * 100
+                with col1:
+                    st.markdown(f"""
+                    <div style="background-color: {bg_color}; padding: 10px; border-radius: 8px; margin: 5px 0;">
+                        <strong>{row['Prénom']} {row['Nom']}</strong><br>
+                        <small>Modèle: {row['Model']}</small>
+                    </div>
+                    """, unsafe_allow_html=True)
                 
-                color = get_score_color(normalized)
-                row_cols[3 + i].markdown(
-                    f'<span style="background-color: {color}; color: white; padding: 3px 8px; '
-                    f'border-radius: 10px; font-weight: bold;">{int(score_val)}</span>',
-                    unsafe_allow_html=True
-                )
-            
-            # Bouton CV
-            cv_file = get_cv_file(row['Prénom'], row['Nom'])
-            if cv_file:
-                if row_cols[-1].button("👁️", key=f"btn_{idx}_{row['Model']}", help=f"Voir CV de {row['Prénom']} {row['Nom']}"):
-                    # Récupérer les scores de tous les modèles pour ce candidat
-                    candidate_all_models = df_matching[
-                        (df_matching['Prénom'] == row['Prénom']) & 
-                        (df_matching['Nom'] == row['Nom'])
-                    ]
-                    
-                    # Filtrer selon le filtre de modèle actif
-                    if model_filter != 'Tous':
-                        candidate_all_models = candidate_all_models[candidate_all_models['Model'] == model_filter]
-                    
-                    model_scores = {}
-                    for _, m_row in candidate_all_models.iterrows():
-                        model_scores[m_row['Model']] = {
-                            'score': m_row['Score global'],
-                            'details': {col: m_row[col] for col in all_score_cols}
+                with col2:
+                    st.markdown(f"""
+                    <div style="background-color: {color}; color: white; padding: 10px; border-radius: 8px; text-align: center; margin: 5px 0;">
+                        <strong>{score:.0f}</strong>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                with col3:
+                    if st.button("👁️", key=f"view_{idx}"):
+                        st.session_state.selected_candidate = {
+                            'prenom': row['Prénom'],
+                            'nom': row['Nom'],
+                            'score': score,
+                            'model': row['Model']
                         }
-                    
-                    st.session_state.selected_candidate = {
-                        'prenom': row['Prénom'],
-                        'nom': row['Nom'],
-                        'cv_file': cv_file,
-                        'model_scores': model_scores
-                    }
-                    st.rerun()
     
-    # Colonne droite: Affichage du CV
     with col_cv:
-        st.markdown('<div class="section-header">👤 CV du Candidat</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-header">📄 CV du Candidat</div>', unsafe_allow_html=True)
         
-        if st.session_state.selected_candidate is not None:
+        if st.session_state.selected_candidate:
             candidate = st.session_state.selected_candidate
-            cv_path = DATA_PATH / candidate['cv_file']
-            model_scores = candidate.get('model_scores', {})
+            st.markdown(f"**{candidate['prenom']} {candidate['nom']}** - Score: {candidate['score']:.0f}")
             
-            # Header du candidat avec scores par modèle
-            st.markdown(f"""
-            <div style="
-                background: #f8f9fa;
-                padding: 15px;
-                border-radius: 10px;
-                margin-bottom: 15px;
-            ">
-                <h3 style="margin: 0; color: #2c3e50;">
-                    {candidate['prenom']} {candidate['nom']}
-                </h3>
-            </div>
-            """, unsafe_allow_html=True)
+            # Trouver le fichier CV
+            cv_path = get_cv_file(candidate['prenom'], candidate['nom'].upper())
             
-            # Afficher les scores pour chaque modèle
-            for model_name, model_data in model_scores.items():
-                score = model_data['score']
-                color = get_score_color(score)
-                st.markdown(f"""
-                <div style="
-                    background-color: {color};
-                    color: white;
-                    padding: 8px 12px;
-                    border-radius: 8px;
-                    margin-bottom: 8px;
-                    display: inline-block;
-                    margin-right: 10px;
-                ">
-                    <strong>{model_name}</strong>: {int(score)}/100
-                </div>
-                """, unsafe_allow_html=True)
-            
-            st.markdown("")  # Espacement
-            
-            # Charger les données parsées du candidat
-            df_parsed = load_parsed_cvs()
-            candidat_data = None
-            if df_parsed is not None:
-                candidat_match = df_parsed[
-                    (df_parsed['prenom'] == candidate['prenom']) & 
-                    (df_parsed['nom'] == candidate['nom'])
-                ]
-                if len(candidat_match) > 0:
-                    candidat_data = candidat_match.iloc[0]
-            
-            # Bloc 1: Informations générales
-            if candidat_data is not None:
-                with st.expander("👤 Informations générales", expanded=False):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.write(f"**Nom:** {candidat_data['prenom']} {candidat_data['nom']}")
-                        st.write(f"**Ville:** {candidat_data.get('ville', 'N/A')}")
-                        st.write(f"**Email:** {candidat_data.get('email', 'N/A')}")
-                        st.write(f"**Téléphone:** {candidat_data.get('telephone', 'N/A')}")
-                    with col2:
-                        st.write(f"**Années d'expérience:** {candidat_data.get('annees_experience', 'N/A')}")
-                        st.write(f"**Diplôme IDE:** {candidat_data.get('diplome_ide_annee', 'N/A')}")
-                        st.write(f"**Disponibilité:** {candidat_data.get('disponibilite', 'N/A')}")
-            
-            # Bloc 2: Expériences spécifiques
-            if candidat_data is not None:
-                with st.expander("🏥 Expériences spécifiques", expanded=False):
-                    st.write(f"**Exp. Oncologie:** {candidat_data.get('experience_oncologie_annees', 'N/A')} ans")
-                    if pd.notna(candidat_data.get('experience_oncologie_details')):
-                        st.write(f"↳ {candidat_data['experience_oncologie_details']}")
-                    
-                    st.write(f"**Exp. Urologie:** {candidat_data.get('experience_urologie_annees', 'N/A')} ans")
-                    if pd.notna(candidat_data.get('experience_urologie_details')):
-                        st.write(f"↳ {candidat_data['experience_urologie_details']}")
-                    
-                    st.write(f"**Dispositif d'annonce:** {'Oui' if candidat_data.get('experience_dispositif_annonce') else 'Non'}")
-                    if pd.notna(candidat_data.get('experience_dispositif_annonce_details')):
-                        st.write(f"↳ {candidat_data['experience_dispositif_annonce_details']}")
-            
-            # Bloc 3: Compétences et Points Forts
-            if candidat_data is not None:
-                with st.expander("💪 Compétences et Points Forts", expanded=False):
-                    if pd.notna(candidat_data.get('principales_competences_techniques')):
-                        st.write(f"**Compétences techniques:** {candidat_data['principales_competences_techniques']}")
-                    
-                    if pd.notna(candidat_data.get('competences_relationnelles')):
-                        st.write(f"**Compétences relationnelles:** {candidat_data['competences_relationnelles']}")
-                    
-                    if pd.notna(candidat_data.get('points_forts_pour_poste_annonce')):
-                        st.success(f"**Points forts:** {candidat_data['points_forts_pour_poste_annonce']}")
-                    
-                    if pd.notna(candidat_data.get('points_vigilance')):
-                        st.warning(f"**Points de vigilance:** {candidat_data['points_vigilance']}")
-            
-            # Détail des scores avec couleurs (pour chaque modèle)
-            for model_name, model_data in model_scores.items():
-                with st.expander(f"📊 Détail des scores - {model_name}", expanded=len(model_scores) == 1):
-                    details = model_data['details']
-                    max_scores = {
-                        'Score global': 100,
-                        'Compétences techniques': 30,
-                        'Contexte métier': 10,
-                        'Disponibilité': 5,
-                        'Expérience': 25,
-                        'Formation et certifications': 15,
-                        'Soft skills': 15
-                    }
-                    for score_name, score_val in details.items():
-                        max_val = max_scores.get(score_name, 100)
-                        pct = (score_val / max_val) * 100
-                        color = get_score_color(pct)
-                        
-                        st.markdown(f"**{score_name}:** {int(score_val)}/{max_val}")
-                        st.markdown(
-                            f'<div style="background-color: #e0e0e0; border-radius: 10px; height: 20px; width: 100%;">'
-                            f'<div style="background-color: {color}; width: {pct}%; height: 100%; border-radius: 10px;"></div>'
-                            f'</div>',
-                            unsafe_allow_html=True
-                        )
-                        st.markdown("")  # Espacement
-            
-            # Affichage du CV
-            with st.expander("📄 CV complet", expanded=False):
+            if cv_path and cv_path.exists():
                 display_pdf(cv_path, f"cv_{candidate['prenom']}_{candidate['nom']}")
+            else:
+                st.warning(f"CV non trouvé pour {candidate['prenom']} {candidate['nom']}")
+                st.info(f"Chemin attendu: {cv_path}")
         else:
             st.info("👈 Cliquez sur 👁️ pour afficher un CV")
             
@@ -481,7 +314,7 @@ def view_parsed_cvs():
     
     if df is None:
         st.error(f"❌ Fichier non trouvé: `{CV_PARSED_FILE}`")
-        st.info("Placez le fichier CV_Parsed.xlsx dans le dossier data.")
+        st.info("Placez le fichier CV Parsed.xlsx dans le dossier data/cv.")
         return
     
     # Colonnes principales
