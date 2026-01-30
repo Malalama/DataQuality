@@ -1,0 +1,14 @@
+# Secrets Streamlit (ne jamais commiter !)
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+.env
+
+# IDE
+.vscode/
+.idea/
