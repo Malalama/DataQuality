@@ -3,3 +3,5 @@ PyMuPDF
 pandas
 Pillow
 openpyxl
+supabase>=2.0.0
+tabulate>=0.9.0
