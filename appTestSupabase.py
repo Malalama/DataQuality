@@ -21,6 +21,41 @@ def get_supabase_client() -> Client:
     key = st.secrets["SUPABASE_KEY"]
     return create_client(url, key)
 
+@st.cache_data(ttl=300)  # Cache pendant 5 minutes
+def get_available_tables() -> list[str]:
+    """
+    Récupère la liste des tables disponibles dans le schéma public.
+    
+    Returns:
+        Liste des noms de tables
+    """
+    supabase = get_supabase_client()
+    
+    # Requête pour obtenir les tables du schéma public
+    query = """
+        SELECT table_name 
+        FROM information_schema.tables 
+        WHERE table_schema = 'public' 
+        AND table_type = 'BASE TABLE'
+        ORDER BY table_name
+    """
+    
+    try:
+        # Utilise la fonction RPC pour exécuter une requête SQL brute
+        # Note: nécessite une fonction SQL côté Supabase, sinon on utilise une alternative
+        response = supabase.rpc('get_public_tables').execute()
+        return [row['table_name'] for row in response.data]
+    except Exception:
+        # Alternative: essayer via PostgREST si la fonction RPC n'existe pas
+        # On peut créer une fonction ou utiliser une table système accessible
+        try:
+            # Tente d'accéder à pg_tables si accessible
+            response = supabase.from_('pg_tables').select('tablename').eq('schemaname', 'public').execute()
+            return [row['tablename'] for row in response.data]
+        except Exception:
+            # Fallback: retourne une liste vide ou des tables par défaut
+            return []
+
 def query_table(table_name: str, columns: str = "*", limit: int = 100) -> pd.DataFrame:
     """
     Effectue une requête sur une table Supabase.
@@ -41,15 +76,34 @@ def main():
     st.title("🗃️ Supabase Table Viewer")
     st.markdown("Visualisez les données de vos tables Supabase")
     
+    # Récupération des tables disponibles
+    available_tables = get_available_tables()
+    
     # Sidebar pour les paramètres
     with st.sidebar:
         st.header("⚙️ Paramètres")
         
-        table_name = st.text_input(
-            "Nom de la table",
-            value="users",
-            help="Entrez le nom de la table Supabase à interroger"
-        )
+        # Dropdown pour sélectionner la table
+        if available_tables:
+            table_name = st.selectbox(
+                "Nom de la table",
+                options=available_tables,
+                help="Sélectionnez la table Supabase à interroger"
+            )
+        else:
+            st.warning("Impossible de récupérer la liste des tables automatiquement.")
+            table_name = st.text_input(
+                "Nom de la table",
+                value="users",
+                help="Entrez le nom de la table Supabase à interroger"
+            )
+        
+        # Bouton pour rafraîchir la liste des tables
+        if st.button("🔄 Rafraîchir la liste", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
+        
+        st.divider()
         
         columns = st.text_input(
             "Colonnes",
