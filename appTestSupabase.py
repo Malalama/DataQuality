@@ -1,13 +1,14 @@
 """
 Supabase Table Viewer - Streamlit App
 Affiche les résultats d'une requête Supabase dans une interface web.
-Inclut également un explorateur de fichiers pour les buckets Supabase Storage.
+Inclut également un explorateur de fichiers et un outil d'upload pour les buckets Supabase Storage.
 """
 
 import streamlit as st
 from supabase import create_client, Client
 import pandas as pd
 from datetime import datetime
+import mimetypes
 
 # Configuration de la page
 st.set_page_config(
@@ -95,6 +96,35 @@ def get_file_public_url(bucket_name: str, file_path: str) -> str:
     """
     supabase = get_supabase_client()
     return supabase.storage.from_(bucket_name).get_public_url(file_path)
+
+def upload_file_to_supabase(bucket_name: str, file_path: str, file_data: bytes, content_type: str, upsert: bool = False) -> dict:
+    """
+    Upload un fichier vers Supabase Storage.
+    
+    Args:
+        bucket_name: Nom du bucket cible
+        file_path: Chemin de destination dans le bucket
+        file_data: Contenu du fichier en bytes
+        content_type: Type MIME du fichier
+        upsert: Si True, écrase le fichier existant
+    
+    Returns:
+        Réponse de l'API Supabase
+    """
+    supabase = get_supabase_client()
+    
+    file_options = {
+        "content-type": content_type,
+        "upsert": str(upsert).lower()
+    }
+    
+    response = supabase.storage.from_(bucket_name).upload(
+        path=file_path,
+        file=file_data,
+        file_options=file_options
+    )
+    
+    return response
 
 def format_file_size(size_bytes: int) -> str:
     """Formate la taille d'un fichier en unités lisibles."""
@@ -407,18 +437,271 @@ def render_storage_tab():
     else:
         st.info("👈 Sélectionnez un bucket dans la barre latérale pour explorer les fichiers")
 
+def render_upload_tab():
+    """Affiche l'onglet d'upload de fichiers vers Supabase Storage."""
+    st.header("📤 Upload de Fichiers")
+    st.markdown("Téléversez des fichiers vers vos buckets Supabase Storage")
+    
+    # Récupération des buckets disponibles
+    buckets = get_available_buckets()
+    
+    with st.sidebar:
+        st.header("⚙️ Paramètres Upload")
+        
+        if buckets:
+            bucket_names = [b.name if hasattr(b, 'name') else b.get('name', str(b)) for b in buckets]
+            upload_bucket = st.selectbox(
+                "Bucket de destination",
+                options=bucket_names,
+                help="Sélectionnez le bucket où uploader les fichiers",
+                key="upload_bucket_select"
+            )
+        else:
+            st.warning("Aucun bucket trouvé.")
+            upload_bucket = st.text_input(
+                "Nom du bucket",
+                value="",
+                help="Entrez le nom du bucket de destination",
+                key="upload_bucket_input"
+            )
+        
+        st.divider()
+        
+        upload_path = st.text_input(
+            "Chemin de destination",
+            value="",
+            help="Chemin dans le bucket (laisser vide pour la racine). Ex: images/avatars",
+            key="upload_path_input"
+        )
+        
+        st.divider()
+        
+        upsert_option = st.checkbox(
+            "Écraser si existant",
+            value=False,
+            help="Si activé, écrase les fichiers existants avec le même nom",
+            key="upsert_checkbox"
+        )
+        
+        # Bouton pour rafraîchir les buckets
+        if st.button("🔄 Rafraîchir les buckets", use_container_width=True, key="refresh_upload_buckets"):
+            st.cache_data.clear()
+            st.rerun()
+    
+    # Zone principale
+    if upload_bucket:
+        # Affichage du chemin de destination
+        destination_display = f"`{upload_bucket}`"
+        if upload_path:
+            destination_display += f" / `{upload_path}`"
+        st.markdown(f"**📍 Destination:** {destination_display}")
+        
+        st.divider()
+        
+        # Zone d'upload
+        st.subheader("📎 Sélectionnez vos fichiers")
+        
+        uploaded_files = st.file_uploader(
+            "Glissez-déposez vos fichiers ici ou cliquez pour parcourir",
+            accept_multiple_files=True,
+            help="Vous pouvez sélectionner plusieurs fichiers à la fois",
+            key="file_uploader"
+        )
+        
+        if uploaded_files:
+            st.divider()
+            st.subheader("📋 Fichiers sélectionnés")
+            
+            # Préparation des données pour l'aperçu
+            preview_data = []
+            for f in uploaded_files:
+                # Détermination du type MIME
+                mime_type, _ = mimetypes.guess_type(f.name)
+                if mime_type is None:
+                    mime_type = f.type if f.type else "application/octet-stream"
+                
+                # Construction du chemin final
+                if upload_path:
+                    final_path = f"{upload_path.strip('/')}/{f.name}"
+                else:
+                    final_path = f.name
+                
+                preview_data.append({
+                    "Nom": f.name,
+                    "Taille": format_file_size(f.size),
+                    "Type": mime_type,
+                    "Chemin final": final_path
+                })
+            
+            df_preview = pd.DataFrame(preview_data)
+            st.dataframe(
+                df_preview,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Nom": st.column_config.TextColumn("Nom du fichier", width="medium"),
+                    "Taille": st.column_config.TextColumn("Taille", width="small"),
+                    "Type": st.column_config.TextColumn("Type MIME", width="medium"),
+                    "Chemin final": st.column_config.TextColumn("Chemin de destination", width="large"),
+                }
+            )
+            
+            # Résumé
+            total_size = sum(f.size for f in uploaded_files)
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Fichiers", len(uploaded_files))
+            col2.metric("Taille totale", format_file_size(total_size))
+            col3.metric("Destination", upload_bucket)
+            
+            st.divider()
+            
+            # Bouton d'upload
+            col1, col2, col3 = st.columns([1, 2, 1])
+            with col2:
+                upload_button = st.button(
+                    "🚀 Lancer l'upload",
+                    type="primary",
+                    use_container_width=True,
+                    key="start_upload_btn"
+                )
+            
+            if upload_button:
+                st.divider()
+                st.subheader("📊 Progression de l'upload")
+                
+                progress_bar = st.progress(0)
+                status_container = st.container()
+                
+                success_count = 0
+                error_count = 0
+                results = []
+                
+                for i, uploaded_file in enumerate(uploaded_files):
+                    # Mise à jour de la progression
+                    progress = (i + 1) / len(uploaded_files)
+                    progress_bar.progress(progress)
+                    
+                    # Détermination du type MIME
+                    mime_type, _ = mimetypes.guess_type(uploaded_file.name)
+                    if mime_type is None:
+                        mime_type = uploaded_file.type if uploaded_file.type else "application/octet-stream"
+                    
+                    # Construction du chemin final
+                    if upload_path:
+                        final_path = f"{upload_path.strip('/')}/{uploaded_file.name}"
+                    else:
+                        final_path = uploaded_file.name
+                    
+                    try:
+                        # Lecture du contenu du fichier
+                        file_content = uploaded_file.getvalue()
+                        
+                        # Upload vers Supabase
+                        response = upload_file_to_supabase(
+                            bucket_name=upload_bucket,
+                            file_path=final_path,
+                            file_data=file_content,
+                            content_type=mime_type,
+                            upsert=upsert_option
+                        )
+                        
+                        success_count += 1
+                        results.append({
+                            "Fichier": uploaded_file.name,
+                            "Statut": "✅ Succès",
+                            "Chemin": final_path,
+                            "Message": "Upload réussi"
+                        })
+                        
+                    except Exception as e:
+                        error_count += 1
+                        error_msg = str(e)
+                        results.append({
+                            "Fichier": uploaded_file.name,
+                            "Statut": "❌ Erreur",
+                            "Chemin": final_path,
+                            "Message": error_msg
+                        })
+                
+                # Affichage des résultats
+                progress_bar.progress(1.0)
+                
+                st.divider()
+                st.subheader("📋 Résultats de l'upload")
+                
+                # Métriques finales
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Réussis", success_count, delta=None)
+                col2.metric("Échoués", error_count, delta=None)
+                col3.metric("Total", len(uploaded_files))
+                
+                # Tableau des résultats
+                df_results = pd.DataFrame(results)
+                st.dataframe(
+                    df_results,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Fichier": st.column_config.TextColumn("Fichier", width="medium"),
+                        "Statut": st.column_config.TextColumn("Statut", width="small"),
+                        "Chemin": st.column_config.TextColumn("Chemin", width="medium"),
+                        "Message": st.column_config.TextColumn("Message", width="large"),
+                    }
+                )
+                
+                # Message de succès ou d'erreur global
+                if error_count == 0:
+                    st.success(f"🎉 Tous les fichiers ({success_count}) ont été uploadés avec succès!")
+                elif success_count == 0:
+                    st.error(f"❌ Tous les uploads ont échoué ({error_count} erreurs)")
+                else:
+                    st.warning(f"⚠️ Upload partiellement réussi: {success_count} succès, {error_count} erreurs")
+                
+                # Bouton pour voir les fichiers uploadés
+                st.divider()
+                if success_count > 0:
+                    st.info("💡 Utilisez l'onglet **📁 Storage** pour voir vos fichiers uploadés")
+        
+        else:
+            # Zone d'information quand aucun fichier n'est sélectionné
+            st.info("👆 Sélectionnez un ou plusieurs fichiers à uploader")
+            
+            # Informations utiles
+            with st.expander("ℹ️ Informations sur l'upload"):
+                st.markdown("""
+                **Fonctionnalités:**
+                - Upload de plusieurs fichiers simultanément
+                - Détection automatique du type MIME
+                - Option pour écraser les fichiers existants
+                - Suivi de la progression en temps réel
+                
+                **Conseils:**
+                - Vérifiez que le bucket de destination existe
+                - Assurez-vous d'avoir les permissions d'écriture sur le bucket
+                - Utilisez des chemins de dossiers pour organiser vos fichiers
+                
+                **Limites:**
+                - La taille maximale dépend de votre configuration Supabase
+                - Les fichiers très volumineux peuvent prendre du temps
+                """)
+    else:
+        st.info("👈 Sélectionnez un bucket de destination dans la barre latérale")
+
 def main():
     st.title("🗃️ Supabase Viewer")
-    st.markdown("Visualisez les données de vos tables et fichiers Supabase")
+    st.markdown("Visualisez et gérez vos données et fichiers Supabase")
     
     # Création des onglets
-    tab1, tab2 = st.tabs(["📊 Tables", "📁 Storage"])
+    tab1, tab2, tab3 = st.tabs(["📊 Tables", "📁 Storage", "📤 Upload"])
     
     with tab1:
         render_tables_tab()
     
     with tab2:
         render_storage_tab()
+    
+    with tab3:
+        render_upload_tab()
 
 if __name__ == "__main__":
     main()
