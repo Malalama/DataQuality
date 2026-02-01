@@ -1,7 +1,9 @@
 """
 Prime Analytics - Data Quality Dashboard
 =========================================
-Version: 1.2 (Controls in tabs)
+Version: 1.3
+- Logo Prime Analytics
+- Thème couleurs Prime Elevate (bleu → turquoise)
 """
 
 import streamlit as st
@@ -23,12 +25,167 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
-SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
+# =============================================================================
+# CUSTOM CSS - Thème Prime Elevate
+# =============================================================================
+
+st.markdown("""
+<style>
+    /* Import Google Font */
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    
+    /* Global font */
+    html, body, [class*="css"] {
+        font-family: 'Inter', sans-serif;
+    }
+    
+    /* Header gradient style */
+    .main-header {
+        background: linear-gradient(135deg, #003366 0%, #0066cc 50%, #00cccc 100%);
+        padding: 1.5rem 2rem;
+        border-radius: 12px;
+        margin-bottom: 1.5rem;
+        color: white;
+    }
+    
+    .main-header h1 {
+        color: white !important;
+        margin: 0;
+        font-size: 1.8rem;
+    }
+    
+    .main-header p {
+        color: rgba(255,255,255,0.85);
+        margin: 0.5rem 0 0 0;
+    }
+    
+    /* Sidebar styling */
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+    }
+    
+    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
+        color: #64748b;
+    }
+    
+    /* Metric cards */
+    [data-testid="stMetric"] {
+        background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        padding: 1rem;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    }
+    
+    [data-testid="stMetric"] label {
+        color: #64748b !important;
+    }
+    
+    [data-testid="stMetric"] [data-testid="stMetricValue"] {
+        color: #0066cc !important;
+        font-weight: 700;
+    }
+    
+    /* Tabs styling */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        background: linear-gradient(90deg, #003366, #0066cc, #00cccc);
+        padding: 8px;
+        border-radius: 12px;
+    }
+    
+    .stTabs [data-baseweb="tab"] {
+        background-color: rgba(255,255,255,0.15);
+        border-radius: 8px;
+        color: white;
+        font-weight: 500;
+        padding: 10px 20px;
+    }
+    
+    .stTabs [data-baseweb="tab"]:hover {
+        background-color: rgba(255,255,255,0.25);
+    }
+    
+    .stTabs [aria-selected="true"] {
+        background-color: white !important;
+        color: #0066cc !important;
+    }
+    
+    /* Buttons */
+    .stButton > button[kind="primary"] {
+        background: linear-gradient(135deg, #0066cc 0%, #00cccc 100%);
+        border: none;
+        font-weight: 600;
+    }
+    
+    .stButton > button[kind="primary"]:hover {
+        background: linear-gradient(135deg, #0055aa 0%, #00bbbb 100%);
+        border: none;
+    }
+    
+    /* Dataframe */
+    [data-testid="stDataFrame"] {
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        overflow: hidden;
+    }
+    
+    /* Expander */
+    .streamlit-expanderHeader {
+        background: linear-gradient(90deg, #f0f9ff 0%, #e0f7fa 100%);
+        border-radius: 8px;
+    }
+    
+    /* Divider */
+    hr {
+        border: none;
+        height: 2px;
+        background: linear-gradient(90deg, #0066cc, #00cccc);
+        opacity: 0.3;
+    }
+    
+    /* Success/Info boxes */
+    .stAlert {
+        border-radius: 12px;
+    }
+    
+    /* Code blocks */
+    code {
+        background-color: #f0f9ff !important;
+        color: #0066cc !important;
+        border: 1px solid #e0f2fe;
+        border-radius: 6px;
+        padding: 2px 6px;
+    }
+    
+    /* Subheader accent */
+    h2, h3 {
+        color: #003366 !important;
+    }
+    
+    /* Footer styling */
+    .footer {
+        text-align: center;
+        color: #94a3b8;
+        font-size: 0.85rem;
+        padding: 1rem;
+        border-top: 1px solid #e2e8f0;
+        margin-top: 2rem;
+    }
+    
+    .footer a {
+        color: #0066cc;
+        text-decoration: none;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # =============================================================================
-# SUPABASE CONNECTION
+# SUPABASE CONFIG
 # =============================================================================
+
+SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
+SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
 
 @st.cache_resource
 def get_supabase_client():
@@ -41,11 +198,10 @@ def get_supabase_client():
         return None
 
 def get_supabase():
-    client = get_supabase_client()
-    return client
+    return get_supabase_client()
 
 # =============================================================================
-# DATA LOADING FUNCTIONS
+# DATA LOADING
 # =============================================================================
 
 @st.cache_data(ttl=60)
@@ -56,7 +212,7 @@ def load_table_safe(table_name: str, limit: int = 1000):
     try:
         response = supabase.table(table_name).select("*").limit(limit).execute()
         return pd.DataFrame(response.data)
-    except Exception as e:
+    except:
         return pd.DataFrame()
 
 def load_dashboard_summary():
@@ -88,33 +244,36 @@ def get_table_list():
     ]
 
 # =============================================================================
-# HELPER FUNCTIONS
+# HELPERS
 # =============================================================================
 
 def get_status_emoji(status):
     if pd.isna(status):
         return "⚪"
     status = str(status).lower()
-    status_map = {
-        "ok": "🟢", "warning": "🟡", "critical": "🔴",
-        "pending": "⏳", "validated": "✅", "rejected": "❌",
-        "open": "🔵", "escalated": "🚨", "resolved": "✅"
-    }
-    return status_map.get(status, "⚪")
+    return {"ok": "🟢", "warning": "🟡", "critical": "🔴", "pending": "⏳", 
+            "validated": "✅", "rejected": "❌", "open": "🔵", "escalated": "🚨", "resolved": "✅"}.get(status, "⚪")
 
 def render_health_bar(score: float, label: str):
     if pd.isna(score):
         score = 0
     score = float(score)
-    color = "#10b981" if score >= 95 else "#f59e0b" if score >= 90 else "#ef4444"
+    # Gradient colors from Prime palette
+    if score >= 95:
+        color = "#00cccc"  # Turquoise
+    elif score >= 90:
+        color = "#0066cc"  # Blue
+    else:
+        color = "#ef4444"  # Red for critical
+    
     st.markdown(f"""
-    <div style="margin-bottom: 10px;">
-        <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
-            <span>{label}</span>
-            <span style="font-weight: bold;">{score:.1f}%</span>
+    <div style="margin-bottom: 12px;">
+        <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+            <span style="color: #334155; font-weight: 500;">{label}</span>
+            <span style="font-weight: 700; color: {color};">{score:.1f}%</span>
         </div>
-        <div style="background-color: #e5e7eb; border-radius: 10px; height: 20px; overflow: hidden;">
-            <div style="background-color: {color}; width: {min(score, 100)}%; height: 100%; border-radius: 10px;"></div>
+        <div style="background: linear-gradient(90deg, #e2e8f0, #f1f5f9); border-radius: 10px; height: 12px; overflow: hidden;">
+            <div style="background: linear-gradient(90deg, #0066cc, {color}); width: {min(score, 100)}%; height: 100%; border-radius: 10px; transition: width 0.5s ease;"></div>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -166,7 +325,7 @@ def get_demo_corrections_data():
     })
 
 # =============================================================================
-# ACTION FUNCTIONS
+# ACTIONS
 # =============================================================================
 
 def update_correction_status(correction_id: int, status: str, user: str, comment: str = None):
@@ -181,7 +340,7 @@ def update_correction_status(correction_id: int, status: str, user: str, comment
         supabase.table("dq_correction").update(update_data).eq("correction_id", correction_id).execute()
         return True
     except Exception as e:
-        st.error(f"Erreur mise à jour: {e}")
+        st.error(f"Erreur: {e}")
         return False
 
 # =============================================================================
@@ -189,7 +348,13 @@ def update_correction_status(correction_id: int, status: str, user: str, comment
 # =============================================================================
 
 def render_dashboard_tab():
-    st.header("🏠 Dashboard Qualité des Données")
+    # Header with gradient
+    st.markdown("""
+    <div class="main-header">
+        <h1>🏠 Dashboard Qualité des Données</h1>
+        <p>Vue d'ensemble de la santé de vos données</p>
+    </div>
+    """, unsafe_allow_html=True)
     
     df_summary = load_dashboard_summary()
     df_health = load_source_health()
@@ -203,6 +368,7 @@ def render_dashboard_tab():
     if use_demo:
         st.info("📊 Affichage des données de démonstration")
     
+    # KPIs
     st.subheader("📈 Indicateurs Clés")
     col1, col2, col3, col4 = st.columns(4)
     
@@ -237,8 +403,7 @@ def render_dashboard_tab():
     
     with col_right:
         st.subheader("📊 Qualité par Type de Règle")
-        rule_data = demo["rules"]
-        for _, row in rule_data.sort_values("score").iterrows():
+        for _, row in demo["rules"].sort_values("score").iterrows():
             render_health_bar(row["score"], row["rule_type"])
     
     st.divider()
@@ -250,7 +415,12 @@ def render_dashboard_tab():
 # =============================================================================
 
 def render_corrections_tab():
-    st.header("🤖 Corrections IA")
+    st.markdown("""
+    <div class="main-header">
+        <h1>🤖 Corrections IA</h1>
+        <p>Validez les corrections proposées par l'intelligence artificielle</p>
+    </div>
+    """, unsafe_allow_html=True)
     
     with st.sidebar:
         st.subheader("👤 Utilisateur")
@@ -294,14 +464,14 @@ def render_corrections_tab():
     
     for idx, row in filtered_df.head(20).iterrows():
         st.markdown("---")
-        st.markdown(f"**📍 {row.get('source_name', 'N/A')}** > `{row.get('table_name', 'N/A')}` > `{row.get('field_name', 'N/A')}` > Row: `{row.get('record_key', 'N/A')}`")
+        st.markdown(f"**📍 {row.get('source_name', 'N/A')}** › `{row.get('table_name', 'N/A')}` › `{row.get('field_name', 'N/A')}` › Row: `{row.get('record_key', 'N/A')}`")
         
         col_before, col_arrow, col_after = st.columns([2, 1, 2])
         with col_before:
             st.markdown("**Valeur actuelle:**")
             st.code(row.get("original_value", "N/A"), language=None)
         with col_arrow:
-            st.markdown("<br><h2 style='text-align: center;'>→</h2>", unsafe_allow_html=True)
+            st.markdown("<br><h2 style='text-align: center; color: #0066cc;'>→</h2>", unsafe_allow_html=True)
         with col_after:
             st.markdown("**Valeur proposée:** ✨")
             st.code(row.get("proposed_value", "N/A"), language=None)
@@ -346,7 +516,12 @@ def render_corrections_tab():
 # =============================================================================
 
 def render_issues_tab():
-    st.header("📋 Exploration des Issues")
+    st.markdown("""
+    <div class="main-header">
+        <h1>📋 Exploration des Issues</h1>
+        <p>Analysez et gérez les problèmes de qualité détectés</p>
+    </div>
+    """, unsafe_allow_html=True)
     
     df_issues = load_issues()
     if df_issues.empty:
@@ -385,22 +560,26 @@ def render_issues_tab():
     st.download_button("📥 Exporter CSV", filtered.to_csv(index=False), "issues.csv", "text/csv")
 
 # =============================================================================
-# TAB 4: TABLES - Controls IN TAB
+# TAB 4: TABLES
 # =============================================================================
 
 def render_tables_tab():
-    st.header("📊 Visualisation des Tables")
+    st.markdown("""
+    <div class="main-header">
+        <h1>📊 Visualisation des Tables</h1>
+        <p>Explorez les données stockées dans Supabase</p>
+    </div>
+    """, unsafe_allow_html=True)
     
-    # Controls in main area (NOT sidebar)
     col1, col2, col3 = st.columns([2, 1, 1])
     with col1:
         selected_table = st.selectbox("Nom de la table", get_table_list(), key="table_select")
     with col2:
         columns = st.text_input("Colonnes", value="*", help="* pour toutes")
     with col3:
-        limit = st.slider("Limite de lignes", 10, 500, 100)
+        limit = st.slider("Limite", 10, 500, 100)
     
-    if st.button("🔄 Rafraîchir la liste"):
+    if st.button("🔄 Rafraîchir"):
         st.cache_data.clear()
         st.rerun()
     
@@ -420,18 +599,22 @@ def render_tables_tab():
             st.warning(f"Aucune donnée dans `{selected_table}`")
 
 # =============================================================================
-# TAB 5: STORAGE - Controls IN TAB
+# TAB 5: STORAGE
 # =============================================================================
 
 def render_storage_tab():
-    st.header("📁 Gestion du Storage")
+    st.markdown("""
+    <div class="main-header">
+        <h1>📁 Gestion du Storage</h1>
+        <p>Parcourez les fichiers stockés dans Supabase Storage</p>
+    </div>
+    """, unsafe_allow_html=True)
     
     supabase = get_supabase()
     if not supabase:
         st.warning("Connexion Supabase requise.")
         return
     
-    # Controls in main area (NOT sidebar)
     col1, col2 = st.columns(2)
     with col1:
         bucket_name = st.text_input("Bucket", value="bucketprimelab", key="storage_bucket")
@@ -456,7 +639,12 @@ def render_storage_tab():
 # =============================================================================
 
 def render_upload_tab():
-    st.header("📤 Upload de Fichiers")
+    st.markdown("""
+    <div class="main-header">
+        <h1>📤 Upload de Fichiers</h1>
+        <p>Importez vos fichiers vers Supabase</p>
+    </div>
+    """, unsafe_allow_html=True)
     
     supabase = get_supabase()
     col1, col2 = st.columns(2)
@@ -470,7 +658,7 @@ def render_upload_tab():
             if supabase and st.button("⬆️ Uploader", type="primary"):
                 try:
                     supabase.storage.from_(bucket).upload(uploaded_file.name, uploaded_file.getvalue(), {"content-type": uploaded_file.type})
-                    st.success(f"✅ Uploadé!")
+                    st.success("✅ Uploadé!")
                 except Exception as e:
                     st.error(f"Erreur: {e}")
     
@@ -494,12 +682,22 @@ def render_upload_tab():
 # =============================================================================
 
 def main():
+    # Sidebar with logo
     with st.sidebar:
-        st.title("📊 Data Quality")
+        # Logo from GitHub assets
+        st.image("assets/logo-prime-analytics-black-2026.png", width=200)
+        st.markdown("---")
+        st.markdown("### 📊 Data Quality")
         st.caption("Powered by Alteryx + AI")
-        st.divider()
-        st.caption("© 2025 Prime Analytics")
+        st.markdown("---")
+        st.markdown("""
+        <div style="color: #64748b; font-size: 0.85rem;">
+            © 2026 Prime Analytics<br>
+            <a href="https://www.primeanalytics.fr" target="_blank" style="color: #0066cc;">www.primeanalytics.fr</a>
+        </div>
+        """, unsafe_allow_html=True)
     
+    # Tabs
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "🏠 Dashboard", "🤖 AI Corrections", "📋 Issues", "📊 Tables", "📁 Storage", "📤 Upload"
     ])
