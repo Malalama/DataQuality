@@ -21,41 +21,6 @@ def get_supabase_client() -> Client:
     key = st.secrets["SUPABASE_KEY"]
     return create_client(url, key)
 
-@st.cache_data(ttl=300)  # Cache pendant 5 minutes
-def get_available_tables() -> list[str]:
-    """
-    Récupère la liste des tables disponibles dans le schéma public.
-    
-    Returns:
-        Liste des noms de tables
-    """
-    supabase = get_supabase_client()
-    
-    # Requête pour obtenir les tables du schéma public
-    query = """
-        SELECT table_name 
-        FROM information_schema.tables 
-        WHERE table_schema = 'public' 
-        AND table_type = 'BASE TABLE'
-        ORDER BY table_name
-    """
-    
-    try:
-        # Utilise la fonction RPC pour exécuter une requête SQL brute
-        # Note: nécessite une fonction SQL côté Supabase, sinon on utilise une alternative
-        response = supabase.rpc('get_public_tables').execute()
-        return [row['table_name'] for row in response.data]
-    except Exception:
-        # Alternative: essayer via PostgREST si la fonction RPC n'existe pas
-        # On peut créer une fonction ou utiliser une table système accessible
-        try:
-            # Tente d'accéder à pg_tables si accessible
-            response = supabase.from_('pg_tables').select('tablename').eq('schemaname', 'public').execute()
-            return [row['tablename'] for row in response.data]
-        except Exception:
-            # Fallback: retourne une liste vide ou des tables par défaut
-            return []
-
 def query_table(table_name: str, columns: str = "*", limit: int = 100) -> pd.DataFrame:
     """
     Effectue une requête sur une table Supabase.
@@ -72,92 +37,166 @@ def query_table(table_name: str, columns: str = "*", limit: int = 100) -> pd.Dat
     response = supabase.table(table_name).select(columns).limit(limit).execute()
     return pd.DataFrame(response.data)
 
+def list_bucket_files(bucket_name: str, folder: str = "") -> pd.DataFrame:
+    """
+    Liste les fichiers d'un bucket Supabase Storage.
+    
+    Args:
+        bucket_name: Nom du bucket
+        folder: Chemin du dossier (vide pour la racine)
+    
+    Returns:
+        DataFrame avec la liste des fichiers
+    """
+    supabase = get_supabase_client()
+    response = supabase.storage.from_(bucket_name).list(folder)
+    
+    if not response:
+        return pd.DataFrame()
+    
+    # Transformer en DataFrame avec colonnes utiles
+    files_data = []
+    for item in response:
+        files_data.append({
+            "name": item.get("name", ""),
+            "id": item.get("id", ""),
+            "size": item.get("metadata", {}).get("size", 0) if item.get("metadata") else 0,
+            "mimetype": item.get("metadata", {}).get("mimetype", "") if item.get("metadata") else "",
+            "created_at": item.get("created_at", ""),
+            "updated_at": item.get("updated_at", ""),
+        })
+    
+    return pd.DataFrame(files_data)
+
+def list_buckets() -> list:
+    """Liste tous les buckets disponibles."""
+    supabase = get_supabase_client()
+    response = supabase.storage.list_buckets()
+    return [bucket.name for bucket in response]
+
 def main():
-    st.title("🗃️ Supabase Table Viewer")
-    st.markdown("Visualisez les données de vos tables Supabase")
+    st.title("🗃️ Supabase Viewer")
     
-    # Récupération des tables disponibles
-    available_tables = get_available_tables()
+    # Création des onglets
+    tab1, tab2 = st.tabs(["📊 Tables", "📁 Storage"])
     
-    # Sidebar pour les paramètres
-    with st.sidebar:
-        st.header("⚙️ Paramètres")
+    # ===== ONGLET 1: TABLES =====
+    with tab1:
+        st.markdown("Visualisez les données de vos tables Supabase")
         
-        # Dropdown pour sélectionner la table
-        if available_tables:
-            table_name = st.selectbox(
-                "Nom de la table",
-                options=available_tables,
-                help="Sélectionnez la table Supabase à interroger"
-            )
-        else:
-            st.warning("Impossible de récupérer la liste des tables automatiquement.")
+        # Sidebar pour les paramètres des tables
+        with st.sidebar:
+            st.header("⚙️ Paramètres Tables")
+            
             table_name = st.text_input(
                 "Nom de la table",
                 value="users",
                 help="Entrez le nom de la table Supabase à interroger"
             )
-        
-        # Bouton pour rafraîchir la liste des tables
-        if st.button("🔄 Rafraîchir la liste", use_container_width=True):
-            st.cache_data.clear()
-            st.rerun()
-        
-        st.divider()
-        
-        columns = st.text_input(
-            "Colonnes",
-            value="*",
-            help="Colonnes à sélectionner (* pour toutes)"
-        )
-        
-        limit = st.slider(
-            "Limite de lignes",
-            min_value=10,
-            max_value=1000,
-            value=100,
-            step=10
-        )
-        
-        query_button = st.button("🔍 Exécuter la requête", type="primary", use_container_width=True)
-    
-    # Zone principale
-    if query_button:
-        try:
-            with st.spinner("Chargement des données..."):
-                df = query_table(table_name, columns, limit)
             
-            if df.empty:
-                st.warning("Aucune donnée trouvée dans cette table.")
+            columns = st.text_input(
+                "Colonnes",
+                value="*",
+                help="Colonnes à sélectionner (* pour toutes)"
+            )
+            
+            limit = st.slider(
+                "Limite de lignes",
+                min_value=10,
+                max_value=1000,
+                value=100,
+                step=10
+            )
+            
+            query_button = st.button("🔍 Exécuter la requête", type="primary", use_container_width=True)
+        
+        # Zone principale tables
+        if query_button:
+            try:
+                with st.spinner("Chargement des données..."):
+                    df = query_table(table_name, columns, limit)
+                
+                if df.empty:
+                    st.warning("Aucune donnée trouvée dans cette table.")
+                else:
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Lignes", len(df))
+                    col2.metric("Colonnes", len(df.columns))
+                    col3.metric("Table", table_name)
+                    
+                    st.divider()
+                    
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+                    
+                    csv = df.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="📥 Télécharger en CSV",
+                        data=csv,
+                        file_name=f"{table_name}_export.csv",
+                        mime="text/csv"
+                    )
+                    
+            except Exception as e:
+                st.error(f"Erreur lors de la requête : {e}")
+        else:
+            st.info("👈 Configurez les paramètres dans la barre latérale et cliquez sur 'Exécuter la requête'")
+    
+    # ===== ONGLET 2: STORAGE =====
+    with tab2:
+        st.markdown("Visualisez les fichiers de vos buckets Supabase Storage")
+        
+        try:
+            # Récupérer la liste des buckets
+            buckets = list_buckets()
+            
+            if not buckets:
+                st.warning("Aucun bucket trouvé.")
             else:
-                # Métriques
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Lignes", len(df))
-                col2.metric("Colonnes", len(df.columns))
-                col3.metric("Table", table_name)
+                col1, col2 = st.columns([2, 3])
                 
-                st.divider()
+                with col1:
+                    selected_bucket = st.selectbox(
+                        "Sélectionner un bucket",
+                        options=buckets,
+                        help="Choisissez le bucket à explorer"
+                    )
                 
-                # Affichage de la table
-                st.dataframe(
-                    df,
-                    use_container_width=True,
-                    hide_index=True
-                )
+                with col2:
+                    folder_path = st.text_input(
+                        "Chemin du dossier (optionnel)",
+                        value="",
+                        help="Laissez vide pour la racine, ou entrez un chemin comme 'images/2024'"
+                    )
                 
-                # Option de téléchargement
-                csv = df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="📥 Télécharger en CSV",
-                    data=csv,
-                    file_name=f"{table_name}_export.csv",
-                    mime="text/csv"
-                )
-                
+                if st.button("📂 Lister les fichiers", type="primary"):
+                    with st.spinner("Chargement des fichiers..."):
+                        df_files = list_bucket_files(selected_bucket, folder_path)
+                    
+                    if df_files.empty:
+                        st.warning("Aucun fichier trouvé dans ce bucket/dossier.")
+                    else:
+                        # Métriques
+                        col1, col2, col3 = st.columns(3)
+                        col1.metric("Fichiers", len(df_files))
+                        col2.metric("Taille totale", f"{df_files['size'].sum() / 1024:.1f} KB")
+                        col3.metric("Bucket", selected_bucket)
+                        
+                        st.divider()
+                        
+                        # Affichage de la table des fichiers
+                        st.dataframe(df_files, use_container_width=True, hide_index=True)
+                        
+                        # Option de téléchargement de la liste
+                        csv = df_files.to_csv(index=False).encode('utf-8')
+                        st.download_button(
+                            label="📥 Télécharger la liste en CSV",
+                            data=csv,
+                            file_name=f"{selected_bucket}_files.csv",
+                            mime="text/csv"
+                        )
+                        
         except Exception as e:
-            st.error(f"Erreur lors de la requête : {e}")
-    else:
-        st.info("👈 Configurez les paramètres dans la barre latérale et cliquez sur 'Exécuter la requête'")
+            st.error(f"Erreur lors de l'accès au storage : {e}")
 
 if __name__ == "__main__":
     main()
