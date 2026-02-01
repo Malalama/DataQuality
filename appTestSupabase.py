@@ -1,707 +1,860 @@
 """
-Supabase Table Viewer - Streamlit App
-Affiche les résultats d'une requête Supabase dans une interface web.
-Inclut également un explorateur de fichiers et un outil d'upload pour les buckets Supabase Storage.
+Prime Analytics - Data Quality Dashboard
+=========================================
+Application Streamlit pour la gestion de la qualité des données
+avec intégration Supabase et corrections IA.
+
+Tabs:
+1. 🏠 Dashboard - Vue exécutive
+2. 🤖 AI Corrections - Workflow de validation des corrections IA
+3. 📋 Issues - Exploration détaillée des problèmes
+4. 📊 Tables - Visualisation des tables Supabase
+5. 📁 Storage - Gestion du stockage Supabase
+6. 📤 Upload - Upload de fichiers
 """
 
 import streamlit as st
-from supabase import create_client, Client
 import pandas as pd
-from datetime import datetime
-import mimetypes
+import plotly.express as px
+import plotly.graph_objects as go
+from supabase import create_client, Client
+from datetime import datetime, timedelta
+import json
 
-# Configuration de la page
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+
 st.set_page_config(
-    page_title="Supabase Viewer",
-    page_icon="🗃️",
-    layout="wide"
+    page_title="Prime Analytics - Data Quality",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
+# Supabase Configuration
+SUPABASE_URL = st.secrets.get("SUPABASE_URL", "https://sdlrorvcfticssbeymgb.supabase.co")
+SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
+
+# =============================================================================
+# SUPABASE CONNECTION
+# =============================================================================
+
 @st.cache_resource
-def get_supabase_client() -> Client:
-    """Crée et retourne un client Supabase (mis en cache)."""
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_KEY"]
-    return create_client(url, key)
+def get_supabase_client():
+    """Initialize Supabase client."""
+    if not SUPABASE_KEY:
+        return None
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
 
-@st.cache_data(ttl=300)  # Cache pendant 5 minutes
-def get_available_tables() -> list[str]:
-    """
-    Récupère la liste des tables disponibles dans le schéma public.
-    
-    Returns:
-        Liste des noms de tables
-    """
-    supabase = get_supabase_client()
+def get_supabase():
+    """Get Supabase client with error handling."""
+    client = get_supabase_client()
+    if not client:
+        st.sidebar.error("⚠️ Configurez SUPABASE_KEY dans .streamlit/secrets.toml")
+    return client
+
+# =============================================================================
+# DATA LOADING FUNCTIONS
+# =============================================================================
+
+@st.cache_data(ttl=60)
+def load_dashboard_summary():
+    """Load dashboard summary from materialized view."""
+    supabase = get_supabase()
+    if not supabase:
+        return pd.DataFrame()
     
     try:
-        # Utilise la fonction RPC pour exécuter une requête SQL brute
-        response = supabase.rpc('get_public_tables').execute()
-        return [row['table_name'] for row in response.data]
-    except Exception:
-        try:
-            # Tente d'accéder à pg_tables si accessible
-            response = supabase.from_('pg_tables').select('tablename').eq('schemaname', 'public').execute()
-            return [row['tablename'] for row in response.data]
-        except Exception:
-            return []
-
-@st.cache_data(ttl=300)  # Cache pendant 5 minutes
-def get_available_buckets() -> list[dict]:
-    """
-    Récupère la liste des buckets disponibles dans Supabase Storage.
-    
-    Returns:
-        Liste des buckets avec leurs informations
-    """
-    supabase = get_supabase_client()
-    
-    try:
-        buckets = supabase.storage.list_buckets()
-        return buckets
+        response = supabase.table("mv_dashboard_summary").select("*").execute()
+        return pd.DataFrame(response.data)
     except Exception as e:
-        st.error(f"Erreur lors de la récupération des buckets : {e}")
+        st.error(f"Erreur chargement dashboard: {e}")
+        return pd.DataFrame()
+
+@st.cache_data(ttl=60)
+def load_correction_queue():
+    """Load AI correction queue."""
+    supabase = get_supabase()
+    if not supabase:
+        return pd.DataFrame()
+    
+    try:
+        response = supabase.table("mv_correction_review_queue").select("*").execute()
+        return pd.DataFrame(response.data)
+    except Exception as e:
+        st.error(f"Erreur chargement corrections: {e}")
+        return pd.DataFrame()
+
+@st.cache_data(ttl=60)
+def load_source_health():
+    """Load source health scores."""
+    supabase = get_supabase()
+    if not supabase:
+        return pd.DataFrame()
+    
+    try:
+        response = supabase.table("mv_source_health_score").select("*").execute()
+        return pd.DataFrame(response.data)
+    except Exception as e:
+        st.error(f"Erreur chargement health: {e}")
+        return pd.DataFrame()
+
+@st.cache_data(ttl=60)
+def load_issues():
+    """Load issue details."""
+    supabase = get_supabase()
+    if not supabase:
+        return pd.DataFrame()
+    
+    try:
+        response = supabase.table("dq_issue_detail").select("*").order("created_at", desc=True).limit(500).execute()
+        return pd.DataFrame(response.data)
+    except Exception as e:
+        st.error(f"Erreur chargement issues: {e}")
+        return pd.DataFrame()
+
+@st.cache_data(ttl=60)
+def load_data_sources():
+    """Load data sources."""
+    supabase = get_supabase()
+    if not supabase:
+        return pd.DataFrame()
+    
+    try:
+        response = supabase.table("data_source").select("*").execute()
+        return pd.DataFrame(response.data)
+    except Exception as e:
+        st.error(f"Erreur chargement sources: {e}")
+        return pd.DataFrame()
+
+@st.cache_data(ttl=300)
+def get_table_list():
+    """Get list of tables in the database."""
+    supabase = get_supabase()
+    if not supabase:
+        return []
+    
+    try:
+        # Liste des tables DQ
+        tables = [
+            "data_source", "dq_rule_type", "dq_rule", "dq_field_ref",
+            "dq_run", "dq_measurement", "dq_field_check", "dq_issue_detail",
+            "dq_correction", "dq_audit_log",
+            "mv_dashboard_summary", "mv_correction_review_queue", 
+            "mv_source_health_score", "mv_field_quality_trend", "mv_rule_effectiveness"
+        ]
+        return tables
+    except Exception as e:
+        st.error(f"Erreur liste tables: {e}")
         return []
 
-def get_bucket_files(bucket_name: str, path: str = "") -> list[dict]:
-    """
-    Récupère la liste des fichiers dans un bucket Supabase.
-    
-    Args:
-        bucket_name: Nom du bucket
-        path: Chemin dans le bucket (pour naviguer dans les dossiers)
-    
-    Returns:
-        Liste des fichiers et dossiers
-    """
-    supabase = get_supabase_client()
+def load_table_data(table_name: str, columns: str = "*", limit: int = 100):
+    """Load data from a specific table."""
+    supabase = get_supabase()
+    if not supabase:
+        return pd.DataFrame()
     
     try:
-        files = supabase.storage.from_(bucket_name).list(path)
-        return files
+        response = supabase.table(table_name).select(columns).limit(limit).execute()
+        return pd.DataFrame(response.data)
     except Exception as e:
-        st.error(f"Erreur lors de la récupération des fichiers : {e}")
-        return []
+        st.error(f"Erreur chargement {table_name}: {e}")
+        return pd.DataFrame()
 
-def get_file_public_url(bucket_name: str, file_path: str) -> str:
-    """
-    Génère l'URL publique d'un fichier.
-    
-    Args:
-        bucket_name: Nom du bucket
-        file_path: Chemin complet du fichier
-    
-    Returns:
-        URL publique du fichier
-    """
-    supabase = get_supabase_client()
-    return supabase.storage.from_(bucket_name).get_public_url(file_path)
+# =============================================================================
+# ACTION FUNCTIONS
+# =============================================================================
 
-def upload_file_to_supabase(bucket_name: str, file_path: str, file_data: bytes, content_type: str, upsert: bool = False) -> dict:
-    """
-    Upload un fichier vers Supabase Storage.
+def update_correction_status(correction_id: int, status: str, user: str, comment: str = None, final_value: str = None):
+    """Update correction status in database."""
+    supabase = get_supabase()
+    if not supabase:
+        return False
     
-    Args:
-        bucket_name: Nom du bucket cible
-        file_path: Chemin de destination dans le bucket
-        file_data: Contenu du fichier en bytes
-        content_type: Type MIME du fichier
-        upsert: Si True, écrase le fichier existant
-    
-    Returns:
-        Réponse de l'API Supabase
-    """
-    supabase = get_supabase_client()
-    
-    file_options = {
-        "content-type": content_type,
-        "upsert": str(upsert).lower()
+    try:
+        update_data = {
+            "decision_status": status,
+            "decided_by": user,
+            "decided_at": datetime.now().isoformat()
+        }
+        if comment:
+            update_data["decision_comment"] = comment
+        if final_value:
+            update_data["final_value"] = final_value
+        
+        supabase.table("dq_correction").update(update_data).eq("correction_id", correction_id).execute()
+        
+        # Log audit
+        supabase.table("dq_audit_log").insert({
+            "entity_type": "correction",
+            "entity_id": correction_id,
+            "action": "validate" if status == "validated" else "reject",
+            "previous_status": "pending",
+            "new_status": status,
+            "user_id": user,
+            "user_email": f"{user}@company.com",
+            "comment": comment
+        }).execute()
+        
+        return True
+    except Exception as e:
+        st.error(f"Erreur mise à jour: {e}")
+        return False
+
+# =============================================================================
+# UI COMPONENTS
+# =============================================================================
+
+def render_kpi_card(title: str, value: str, delta: str = None, delta_color: str = "normal"):
+    """Render a KPI metric card."""
+    st.metric(label=title, value=value, delta=delta, delta_color=delta_color)
+
+def render_health_bar(score: float, label: str):
+    """Render a health score bar."""
+    color = "#10b981" if score >= 95 else "#f59e0b" if score >= 90 else "#ef4444"
+    st.markdown(f"""
+    <div style="margin-bottom: 10px;">
+        <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+            <span>{label}</span>
+            <span style="font-weight: bold;">{score:.1f}%</span>
+        </div>
+        <div style="background-color: #e5e7eb; border-radius: 10px; height: 20px; overflow: hidden;">
+            <div style="background-color: {color}; width: {score}%; height: 100%; border-radius: 10px;"></div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+def get_status_emoji(status: str) -> str:
+    """Get emoji for status."""
+    status_map = {
+        "ok": "🟢",
+        "warning": "🟡", 
+        "critical": "🔴",
+        "pending": "⏳",
+        "validated": "✅",
+        "rejected": "❌",
+        "open": "🔵",
+        "escalated": "🚨"
     }
-    
-    response = supabase.storage.from_(bucket_name).upload(
-        path=file_path,
-        file=file_data,
-        file_options=file_options
-    )
-    
-    return response
+    return status_map.get(status, "⚪")
 
-def format_file_size(size_bytes: int) -> str:
-    """Formate la taille d'un fichier en unités lisibles."""
-    if size_bytes is None:
-        return "-"
-    for unit in ['B', 'KB', 'MB', 'GB']:
-        if size_bytes < 1024:
-            return f"{size_bytes:.1f} {unit}"
-        size_bytes /= 1024
-    return f"{size_bytes:.1f} TB"
+# =============================================================================
+# TAB 1: DASHBOARD
+# =============================================================================
 
-def format_datetime(dt_string: str) -> str:
-    """Formate une date ISO en format lisible."""
-    if not dt_string:
-        return "-"
-    try:
-        dt = datetime.fromisoformat(dt_string.replace('Z', '+00:00'))
-        return dt.strftime("%Y-%m-%d %H:%M")
-    except Exception:
-        return dt_string
+def render_dashboard_tab():
+    """Render the executive dashboard tab."""
+    st.header("🏠 Dashboard Qualité des Données")
+    
+    # Load data
+    df_summary = load_dashboard_summary()
+    df_health = load_source_health()
+    df_corrections = load_correction_queue()
+    
+    if df_summary.empty:
+        st.warning("Aucune donnée disponible. Vérifiez la connexion Supabase.")
+        return
+    
+    # ==========================================================================
+    # KPIs Row
+    # ==========================================================================
+    st.subheader("📈 Indicateurs Clés")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    # Calculate KPIs
+    overall_score = df_summary["score"].mean() if "score" in df_summary.columns else 0
+    total_sources = df_summary["source_id"].nunique() if "source_id" in df_summary.columns else 0
+    open_issues = df_summary["open_issues"].sum() if "open_issues" in df_summary.columns else 0
+    pending_corrections = len(df_corrections[df_corrections["decision_status"] == "pending"]) if not df_corrections.empty and "decision_status" in df_corrections.columns else 0
+    
+    with col1:
+        render_kpi_card("Score Global", f"{overall_score:.1f}%", "+1.2%")
+    with col2:
+        render_kpi_card("Sources Surveillées", str(total_sources))
+    with col3:
+        render_kpi_card("Issues Ouvertes", str(int(open_issues)), "-52", "inverse")
+    with col4:
+        render_kpi_card("Corrections IA en attente", str(pending_corrections), "🤖")
+    
+    st.divider()
+    
+    # ==========================================================================
+    # Charts Row
+    # ==========================================================================
+    col_left, col_right = st.columns(2)
+    
+    with col_left:
+        st.subheader("🚦 Santé par Domaine")
+        
+        if not df_health.empty and "business_domain" in df_health.columns:
+            domain_scores = df_health.groupby("business_domain")["overall_score"].mean().reset_index()
+            domain_scores = domain_scores.sort_values("overall_score", ascending=True)
+            
+            fig = px.bar(
+                domain_scores,
+                x="overall_score",
+                y="business_domain",
+                orientation="h",
+                color="overall_score",
+                color_continuous_scale=["#ef4444", "#f59e0b", "#10b981"],
+                range_color=[80, 100]
+            )
+            fig.update_layout(
+                showlegend=False,
+                xaxis_title="Score %",
+                yaxis_title="",
+                height=300,
+                margin=dict(l=0, r=0, t=0, b=0)
+            )
+            fig.update_traces(texttemplate='%{x:.1f}%', textposition='outside')
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            # Demo data
+            for domain, score in [("Regulatory", 96), ("Finance", 94), ("Accounting", 99), ("Reference", 87), ("Risk", 95)]:
+                render_health_bar(score, domain)
+    
+    with col_right:
+        st.subheader("📊 Qualité par Type de Règle")
+        
+        if not df_summary.empty and "rule_type_name" in df_summary.columns:
+            rule_scores = df_summary.groupby("rule_type_name")["score"].mean().reset_index()
+            rule_scores = rule_scores.sort_values("score", ascending=True)
+            
+            fig = px.bar(
+                rule_scores,
+                x="score",
+                y="rule_type_name",
+                orientation="h",
+                color="score",
+                color_continuous_scale=["#ef4444", "#f59e0b", "#10b981"],
+                range_color=[80, 100]
+            )
+            fig.update_layout(
+                showlegend=False,
+                xaxis_title="Score %",
+                yaxis_title="",
+                height=300,
+                margin=dict(l=0, r=0, t=0, b=0)
+            )
+            fig.update_traces(texttemplate='%{x:.1f}%', textposition='outside')
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            # Demo data
+            for rule, score in [("Completeness", 98), ("Field Type", 99), ("Validation", 97), ("List of Values", 96), ("AI Quality", 92)]:
+                render_health_bar(score, rule)
+    
+    st.divider()
+    
+    # ==========================================================================
+    # Attention Required Table
+    # ==========================================================================
+    st.subheader("⚠️ Attention Requise")
+    
+    if not df_summary.empty and "score" in df_summary.columns:
+        # Filter low scores
+        attention_df = df_summary[df_summary["score"] < 99].sort_values("score").head(10)
+        
+        if not attention_df.empty:
+            display_cols = ["source_name", "table_name", "field_name", "rule_name", "score", "status", "open_issues"]
+            available_cols = [c for c in display_cols if c in attention_df.columns]
+            
+            if available_cols:
+                display_df = attention_df[available_cols].copy()
+                display_df["status"] = display_df["status"].apply(lambda x: f"{get_status_emoji(x)} {x}")
+                st.dataframe(display_df, use_container_width=True, hide_index=True)
+        else:
+            st.success("✅ Tous les indicateurs sont au vert !")
+    else:
+        # Demo table
+        demo_data = {
+            "Source": ["Counterparty Master", "Counterparty Master", "AnaCredit", "Budget"],
+            "Field": ["lei_code", "address", "interest_rate", "version"],
+            "Score": ["81.4%", "92.9%", "99.4%", "99.8%"],
+            "Issues": [6500, 2500, 800, 15],
+            "Status": ["🔴 critical", "🔴 critical", "🟡 warning", "🟡 warning"]
+        }
+        st.dataframe(pd.DataFrame(demo_data), use_container_width=True, hide_index=True)
 
-def query_table(table_name: str, columns: str = "*", limit: int = 100) -> pd.DataFrame:
-    """
-    Effectue une requête sur une table Supabase.
+# =============================================================================
+# TAB 2: AI CORRECTIONS
+# =============================================================================
+
+def render_corrections_tab():
+    """Render the AI corrections workflow tab."""
+    st.header("🤖 Corrections IA")
     
-    Args:
-        table_name: Nom de la table à interroger
-        columns: Colonnes à sélectionner (par défaut: toutes)
-        limit: Nombre maximum de lignes à retourner
+    # Load corrections
+    df_corrections = load_correction_queue()
     
-    Returns:
-        DataFrame avec les résultats
-    """
-    supabase = get_supabase_client()
-    response = supabase.table(table_name).select(columns).limit(limit).execute()
-    return pd.DataFrame(response.data)
+    if df_corrections.empty:
+        st.info("Aucune correction en attente.")
+        return
+    
+    # Filter pending
+    pending = df_corrections[df_corrections["decision_status"] == "pending"] if "decision_status" in df_corrections.columns else df_corrections
+    
+    # Stats bar
+    col1, col2, col3, col4 = st.columns(4)
+    total = len(df_corrections)
+    pending_count = len(pending)
+    validated = len(df_corrections[df_corrections["decision_status"] == "validated"]) if "decision_status" in df_corrections.columns else 0
+    rejected = len(df_corrections[df_corrections["decision_status"] == "rejected"]) if "decision_status" in df_corrections.columns else 0
+    
+    col1.metric("Total", total)
+    col2.metric("En attente", pending_count, delta=None)
+    col3.metric("Validées", validated)
+    col4.metric("Rejetées", rejected)
+    
+    st.divider()
+    
+    # User identification
+    with st.sidebar:
+        st.subheader("👤 Utilisateur")
+        current_user = st.text_input("Votre identifiant", value="demo.user", key="correction_user")
+    
+    # Filters
+    col_filter1, col_filter2, col_filter3 = st.columns(3)
+    
+    with col_filter1:
+        status_filter = st.selectbox(
+            "Statut",
+            ["pending", "all", "validated", "rejected"],
+            format_func=lambda x: {"pending": "⏳ En attente", "all": "📋 Tous", "validated": "✅ Validées", "rejected": "❌ Rejetées"}.get(x, x)
+        )
+    
+    with col_filter2:
+        if "ai_category" in df_corrections.columns:
+            categories = ["Tous"] + list(df_corrections["ai_category"].dropna().unique())
+            category_filter = st.selectbox("Catégorie IA", categories)
+        else:
+            category_filter = "Tous"
+    
+    with col_filter3:
+        confidence_min = st.slider("Confiance minimum", 0.0, 1.0, 0.0, 0.05)
+    
+    # Apply filters
+    filtered_df = df_corrections.copy()
+    
+    if status_filter != "all" and "decision_status" in filtered_df.columns:
+        filtered_df = filtered_df[filtered_df["decision_status"] == status_filter]
+    
+    if category_filter != "Tous" and "ai_category" in filtered_df.columns:
+        filtered_df = filtered_df[filtered_df["ai_category"] == category_filter]
+    
+    if "ai_confidence" in filtered_df.columns:
+        filtered_df = filtered_df[filtered_df["ai_confidence"] >= confidence_min]
+    
+    st.subheader(f"📝 Corrections à traiter ({len(filtered_df)})")
+    
+    # Render correction cards
+    for idx, row in filtered_df.head(20).iterrows():
+        with st.container():
+            st.markdown("---")
+            
+            # Header with context
+            source = row.get("source_name", "N/A")
+            table = row.get("table_name", "N/A")
+            field = row.get("field_name", "N/A")
+            record = row.get("record_key", "N/A")
+            
+            st.markdown(f"**📍 {source}** > `{table}` > `{field}` > Row: `{record}`")
+            
+            # Values comparison
+            col_before, col_arrow, col_after = st.columns([2, 1, 2])
+            
+            original = row.get("original_value", "N/A")
+            proposed = row.get("proposed_value", "N/A")
+            
+            with col_before:
+                st.markdown("**Valeur actuelle:**")
+                st.code(original, language=None)
+            
+            with col_arrow:
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.markdown("<h2 style='text-align: center;'>→</h2>", unsafe_allow_html=True)
+            
+            with col_after:
+                st.markdown("**Valeur proposée:** ✨")
+                st.code(proposed, language=None)
+            
+            # AI Explanation
+            justification = row.get("ai_justification", "")
+            if justification:
+                with st.expander("🧠 Explication IA"):
+                    st.info(justification)
+            
+            # Confidence & Category
+            col_conf, col_cat, col_model = st.columns(3)
+            
+            confidence = row.get("ai_confidence", 0)
+            with col_conf:
+                confidence_pct = confidence * 100 if confidence <= 1 else confidence
+                color = "🟢" if confidence_pct >= 95 else "🟡" if confidence_pct >= 85 else "🔴"
+                st.markdown(f"**Confiance:** {color} {confidence_pct:.1f}%")
+            
+            with col_cat:
+                category = row.get("ai_category", "N/A")
+                st.markdown(f"**Catégorie:** `{category}`")
+            
+            with col_model:
+                model = row.get("ai_model", "N/A")
+                st.markdown(f"**Modèle:** `{model}`")
+            
+            # Action buttons
+            status = row.get("decision_status", "pending")
+            correction_id = row.get("correction_id", idx)
+            
+            if status == "pending":
+                col_btn1, col_btn2, col_btn3, col_btn4 = st.columns(4)
+                
+                with col_btn1:
+                    if st.button("✅ Accepter", key=f"accept_{correction_id}", type="primary"):
+                        if update_correction_status(correction_id, "validated", current_user):
+                            st.success("Correction validée !")
+                            st.cache_data.clear()
+                            st.rerun()
+                
+                with col_btn2:
+                    if st.button("❌ Rejeter", key=f"reject_{correction_id}"):
+                        if update_correction_status(correction_id, "rejected", current_user):
+                            st.warning("Correction rejetée.")
+                            st.cache_data.clear()
+                            st.rerun()
+                
+                with col_btn3:
+                    with st.popover("✏️ Modifier"):
+                        new_value = st.text_input("Nouvelle valeur", value=proposed, key=f"edit_{correction_id}")
+                        comment = st.text_area("Commentaire", key=f"comment_{correction_id}")
+                        if st.button("Valider la modification", key=f"save_{correction_id}"):
+                            if update_correction_status(correction_id, "overwritten", current_user, comment, new_value):
+                                st.success("Modification enregistrée !")
+                                st.cache_data.clear()
+                                st.rerun()
+                
+                with col_btn4:
+                    st.button("⏭️ Ignorer", key=f"skip_{correction_id}")
+            else:
+                decided_by = row.get("decided_by", "N/A")
+                decided_at = row.get("decided_at", "N/A")
+                st.markdown(f"**Status:** {get_status_emoji(status)} {status} par `{decided_by}` le `{decided_at}`")
+
+# =============================================================================
+# TAB 3: ISSUES
+# =============================================================================
+
+def render_issues_tab():
+    """Render the issues exploration tab."""
+    st.header("📋 Exploration des Issues")
+    
+    # Load data
+    df_issues = load_issues()
+    df_summary = load_dashboard_summary()
+    
+    # Sidebar filters
+    with st.sidebar:
+        st.subheader("🔍 Filtres Issues")
+        
+        # Status filter
+        status_options = ["Tous", "open", "escalated", "resolved", "ignored"]
+        status_filter = st.selectbox("Statut", status_options)
+        
+        # Priority filter
+        priority_options = ["Tous", "critical", "high", "medium", "low"]
+        priority_filter = st.selectbox("Priorité", priority_options)
+        
+        # Source filter
+        if not df_summary.empty and "source_name" in df_summary.columns:
+            sources = ["Tous"] + list(df_summary["source_name"].unique())
+            source_filter = st.selectbox("Source", sources)
+        else:
+            source_filter = "Tous"
+    
+    # Summary metrics from measurements
+    if not df_summary.empty:
+        st.subheader("📊 Résumé par Source")
+        
+        # Aggregate by source
+        if "source_name" in df_summary.columns and "score" in df_summary.columns:
+            source_summary = df_summary.groupby("source_name").agg({
+                "score": "mean",
+                "open_issues": "sum" if "open_issues" in df_summary.columns else "count"
+            }).reset_index()
+            
+            # Create treemap or bar
+            fig = px.bar(
+                source_summary.sort_values("score"),
+                x="score",
+                y="source_name",
+                orientation="h",
+                color="score",
+                color_continuous_scale=["#ef4444", "#f59e0b", "#10b981"],
+                range_color=[80, 100],
+                title="Score moyen par source"
+            )
+            fig.update_layout(height=400, showlegend=False)
+            st.plotly_chart(fig, use_container_width=True)
+    
+    st.divider()
+    
+    # Issues table
+    st.subheader("🔎 Détail des Issues")
+    
+    if not df_issues.empty:
+        # Apply filters
+        filtered_issues = df_issues.copy()
+        
+        if status_filter != "Tous" and "status" in filtered_issues.columns:
+            filtered_issues = filtered_issues[filtered_issues["status"] == status_filter]
+        
+        if priority_filter != "Tous" and "priority" in filtered_issues.columns:
+            filtered_issues = filtered_issues[filtered_issues["priority"] == priority_filter]
+        
+        # Display metrics
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Issues filtrées", len(filtered_issues))
+        
+        if "priority" in filtered_issues.columns:
+            critical_count = len(filtered_issues[filtered_issues["priority"] == "critical"])
+            col2.metric("Critiques", critical_count)
+        
+        if "status" in filtered_issues.columns:
+            open_count = len(filtered_issues[filtered_issues["status"] == "open"])
+            col3.metric("Ouvertes", open_count)
+        
+        # Display table
+        display_cols = ["record_key", "field_name", "current_value", "issue_type", "issue_description", "status", "priority"]
+        available_cols = [c for c in display_cols if c in filtered_issues.columns]
+        
+        if available_cols:
+            display_df = filtered_issues[available_cols].head(100)
+            
+            # Add status emoji
+            if "status" in display_df.columns:
+                display_df["status"] = display_df["status"].apply(lambda x: f"{get_status_emoji(x)} {x}")
+            if "priority" in display_df.columns:
+                priority_emoji = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}
+                display_df["priority"] = display_df["priority"].apply(lambda x: f"{priority_emoji.get(x, '⚪')} {x}")
+            
+            st.dataframe(display_df, use_container_width=True, hide_index=True)
+            
+            # Export button
+            csv = filtered_issues.to_csv(index=False)
+            st.download_button(
+                "📥 Exporter en CSV",
+                csv,
+                "issues_export.csv",
+                "text/csv"
+            )
+        else:
+            st.dataframe(filtered_issues.head(100), use_container_width=True, hide_index=True)
+    else:
+        st.info("Aucune issue trouvée.")
+
+# =============================================================================
+# TAB 4: TABLES (Supabase Viewer)
+# =============================================================================
 
 def render_tables_tab():
-    """Affiche l'onglet de visualisation des tables."""
+    """Render the Supabase tables viewer tab."""
     st.header("📊 Visualisation des Tables")
     
-    # Récupération des tables disponibles
-    available_tables = get_available_tables()
-    
-    # Sidebar pour les paramètres
+    # Sidebar config
     with st.sidebar:
-        st.header("⚙️ Paramètres Tables")
+        st.subheader("⚙️ Paramètres Tables")
         
-        # Dropdown pour sélectionner la table
-        if available_tables:
-            table_name = st.selectbox(
-                "Nom de la table",
-                options=available_tables,
-                help="Sélectionnez la table Supabase à interroger",
-                key="table_select"
-            )
-        else:
-            st.warning("Impossible de récupérer la liste des tables automatiquement.")
-            table_name = st.text_input(
-                "Nom de la table",
-                value="users",
-                help="Entrez le nom de la table Supabase à interroger",
-                key="table_input"
-            )
+        # Table selection
+        tables = get_table_list()
+        selected_table = st.selectbox("Nom de la table", tables, key="table_select")
         
-        # Bouton pour rafraîchir la liste des tables
-        if st.button("🔄 Rafraîchir la liste", use_container_width=True, key="refresh_tables"):
+        if st.button("🔄 Rafraîchir la liste"):
             st.cache_data.clear()
             st.rerun()
         
         st.divider()
         
-        columns = st.text_input(
-            "Colonnes",
-            value="*",
-            help="Colonnes à sélectionner (* pour toutes)",
-            key="columns_input"
-        )
+        # Columns filter
+        columns = st.text_input("Colonnes", value="*", help="* pour toutes, ou col1,col2,col3")
         
-        limit = st.slider(
-            "Limite de lignes",
-            min_value=10,
-            max_value=1000,
-            value=100,
-            step=10,
-            key="limit_slider"
-        )
-        
-        query_button = st.button("🔍 Exécuter la requête", type="primary", use_container_width=True, key="query_btn")
+        # Row limit
+        limit = st.slider("Limite de lignes", 10, 500, 100)
     
-    # Zone principale
-    if query_button:
-        try:
-            with st.spinner("Chargement des données..."):
-                df = query_table(table_name, columns, limit)
+    # Load and display data
+    if selected_table:
+        df = load_table_data(selected_table, columns, limit)
+        
+        if not df.empty:
+            # Metrics
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Lignes", len(df))
+            col2.metric("Colonnes", len(df.columns))
+            col3.metric("Table", selected_table)
             
-            if df.empty:
-                st.warning("Aucune donnée trouvée dans cette table.")
-            else:
-                # Métriques
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Lignes", len(df))
-                col2.metric("Colonnes", len(df.columns))
-                col3.metric("Table", table_name)
-                
-                st.divider()
-                
-                # Affichage de la table
-                st.dataframe(
-                    df,
-                    use_container_width=True,
-                    hide_index=True
-                )
-                
-                # Option de téléchargement
-                csv = df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="📥 Télécharger en CSV",
-                    data=csv,
-                    file_name=f"{table_name}_export.csv",
-                    mime="text/csv",
-                    key="download_csv"
-                )
-                
-        except Exception as e:
-            st.error(f"Erreur lors de la requête : {e}")
-    else:
-        st.info("👈 Configurez les paramètres dans la barre latérale et cliquez sur 'Exécuter la requête'")
+            st.divider()
+            
+            # Data display
+            st.dataframe(df, use_container_width=True, hide_index=True)
+            
+            # Export
+            csv = df.to_csv(index=False)
+            st.download_button(
+                "📥 Télécharger CSV",
+                csv,
+                f"{selected_table}.csv",
+                "text/csv"
+            )
+        else:
+            st.warning(f"Aucune donnée dans la table `{selected_table}`")
+
+# =============================================================================
+# TAB 5: STORAGE
+# =============================================================================
 
 def render_storage_tab():
-    """Affiche l'onglet de visualisation des fichiers Storage."""
-    st.header("📁 Explorateur de Fichiers Storage")
+    """Render the Supabase storage management tab."""
+    st.header("📁 Gestion du Storage")
     
-    # Initialisation de l'état de session pour la navigation
-    if 'current_path' not in st.session_state:
-        st.session_state.current_path = ""
-    if 'selected_bucket' not in st.session_state:
-        st.session_state.selected_bucket = None
+    supabase = get_supabase()
     
-    # Récupération des buckets disponibles
-    buckets = get_available_buckets()
+    if not supabase:
+        st.warning("Connexion Supabase requise.")
+        return
     
     with st.sidebar:
-        st.header("⚙️ Paramètres Storage")
-        
-        if buckets:
-            bucket_names = [b.name if hasattr(b, 'name') else b.get('name', str(b)) for b in buckets]
-            selected_bucket = st.selectbox(
-                "Bucket",
-                options=bucket_names,
-                help="Sélectionnez le bucket à explorer",
-                key="bucket_select"
-            )
-            
-            # Reset du chemin si on change de bucket
-            if st.session_state.selected_bucket != selected_bucket:
-                st.session_state.selected_bucket = selected_bucket
-                st.session_state.current_path = ""
-        else:
-            st.warning("Aucun bucket trouvé ou accès non autorisé.")
-            selected_bucket = st.text_input(
-                "Nom du bucket",
-                value="",
-                help="Entrez le nom du bucket à explorer",
-                key="bucket_input"
-            )
-            st.session_state.selected_bucket = selected_bucket
-        
-        # Bouton pour rafraîchir
-        if st.button("🔄 Rafraîchir", use_container_width=True, key="refresh_storage"):
-            st.cache_data.clear()
-            st.rerun()
-        
-        st.divider()
-        
-        # Navigation manuelle
-        manual_path = st.text_input(
-            "Chemin",
-            value=st.session_state.current_path,
-            help="Chemin dans le bucket (laisser vide pour la racine)",
-            key="path_input"
-        )
-        if manual_path != st.session_state.current_path:
-            st.session_state.current_path = manual_path
-        
-        if st.button("📂 Aller au chemin", use_container_width=True, key="goto_path"):
-            st.rerun()
+        st.subheader("⚙️ Paramètres Storage")
+        bucket_name = st.text_input("Nom du bucket", value="uploads")
+        folder_path = st.text_input("Chemin", value="")
     
-    # Zone principale
-    if selected_bucket:
-        # Fil d'Ariane (breadcrumb)
-        st.markdown("**📍 Chemin actuel:**")
-        breadcrumb_cols = st.columns([1, 10])
-        with breadcrumb_cols[0]:
-            if st.button("🏠", help="Retour à la racine", key="home_btn"):
-                st.session_state.current_path = ""
-                st.rerun()
+    # List files
+    try:
+        files = supabase.storage.from_(bucket_name).list(folder_path)
         
-        with breadcrumb_cols[1]:
-            if st.session_state.current_path:
-                path_parts = st.session_state.current_path.split('/')
-                breadcrumb = f"`{selected_bucket}` / "
-                for i, part in enumerate(path_parts):
-                    if part:
-                        breadcrumb += f"`{part}` / "
-                st.markdown(breadcrumb)
-            else:
-                st.markdown(f"`{selected_bucket}` (racine)")
-        
-        # Bouton retour
-        if st.session_state.current_path:
-            if st.button("⬆️ Dossier parent", key="parent_btn"):
-                path_parts = st.session_state.current_path.rstrip('/').split('/')
-                st.session_state.current_path = '/'.join(path_parts[:-1])
-                st.rerun()
-        
-        st.divider()
-        
-        # Récupération et affichage des fichiers
-        with st.spinner("Chargement des fichiers..."):
-            files = get_bucket_files(selected_bucket, st.session_state.current_path)
-        
-        if not files:
-            st.info("📭 Ce dossier est vide ou inaccessible.")
-        else:
-            # Séparation des dossiers et fichiers
-            folders = [f for f in files if f.get('id') is None]
-            regular_files = [f for f in files if f.get('id') is not None]
+        if files:
+            st.subheader(f"📂 Fichiers dans `{bucket_name}/{folder_path}`")
             
-            # Métriques
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Dossiers", len(folders))
-            col2.metric("Fichiers", len(regular_files))
-            total_size = sum(f.get('metadata', {}).get('size', 0) or 0 for f in regular_files)
-            col3.metric("Taille totale", format_file_size(total_size))
-            
-            st.divider()
-            
-            # Affichage des dossiers
-            if folders:
-                st.subheader("📁 Dossiers")
-                folder_cols = st.columns(4)
-                for i, folder in enumerate(folders):
-                    folder_name = folder.get('name', 'Unknown')
-                    with folder_cols[i % 4]:
-                        if st.button(f"📁 {folder_name}", key=f"folder_{folder_name}", use_container_width=True):
-                            if st.session_state.current_path:
-                                st.session_state.current_path = f"{st.session_state.current_path}/{folder_name}"
-                            else:
-                                st.session_state.current_path = folder_name
-                            st.rerun()
-            
-            # Affichage des fichiers dans un tableau
-            if regular_files:
-                st.subheader("📄 Fichiers")
-                
-                # Préparation des données pour le tableau
-                file_data = []
-                for f in regular_files:
-                    metadata = f.get('metadata', {}) or {}
-                    file_path = f"{st.session_state.current_path}/{f.get('name', '')}" if st.session_state.current_path else f.get('name', '')
-                    
-                    file_data.append({
-                        "Nom": f.get('name', 'Unknown'),
-                        "Taille": format_file_size(metadata.get('size')),
-                        "Type": metadata.get('mimetype', '-'),
-                        "Dernière modification": format_datetime(f.get('updated_at', '')),
-                        "Chemin": file_path
-                    })
-                
-                df_files = pd.DataFrame(file_data)
-                
-                # Affichage du tableau
-                st.dataframe(
-                    df_files,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "Nom": st.column_config.TextColumn("Nom", width="medium"),
-                        "Taille": st.column_config.TextColumn("Taille", width="small"),
-                        "Type": st.column_config.TextColumn("Type MIME", width="medium"),
-                        "Dernière modification": st.column_config.TextColumn("Modifié le", width="medium"),
-                        "Chemin": st.column_config.TextColumn("Chemin complet", width="large"),
-                    }
-                )
-                
-                # Section pour obtenir les URLs des fichiers
-                st.divider()
-                st.subheader("🔗 Obtenir l'URL d'un fichier")
-                
-                file_names = [f.get('name', '') for f in regular_files]
-                selected_file = st.selectbox(
-                    "Sélectionnez un fichier",
-                    options=file_names,
-                    key="file_url_select"
-                )
-                
-                if selected_file:
-                    file_path = f"{st.session_state.current_path}/{selected_file}" if st.session_state.current_path else selected_file
-                    
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.button("🔗 Générer URL publique", key="gen_url_btn"):
-                            try:
-                                url = get_file_public_url(selected_bucket, file_path)
-                                st.code(url, language=None)
-                                st.success("URL générée avec succès!")
-                            except Exception as e:
-                                st.error(f"Erreur : {e}")
-    else:
-        st.info("👈 Sélectionnez un bucket dans la barre latérale pour explorer les fichiers")
-
-def render_upload_tab():
-    """Affiche l'onglet d'upload de fichiers vers Supabase Storage."""
-    st.header("📤 Upload de Fichiers")
-    st.markdown("Téléversez des fichiers vers vos buckets Supabase Storage")
-    
-    # Récupération des buckets disponibles
-    buckets = get_available_buckets()
-    
-    with st.sidebar:
-        st.header("⚙️ Paramètres Upload")
-        
-        if buckets:
-            bucket_names = [b.name if hasattr(b, 'name') else b.get('name', str(b)) for b in buckets]
-            upload_bucket = st.selectbox(
-                "Bucket de destination",
-                options=bucket_names,
-                help="Sélectionnez le bucket où uploader les fichiers",
-                key="upload_bucket_select"
-            )
-        else:
-            st.warning("Aucun bucket trouvé.")
-            upload_bucket = st.text_input(
-                "Nom du bucket",
-                value="",
-                help="Entrez le nom du bucket de destination",
-                key="upload_bucket_input"
-            )
-        
-        st.divider()
-        
-        upload_path = st.text_input(
-            "Chemin de destination",
-            value="",
-            help="Chemin dans le bucket (laisser vide pour la racine). Ex: images/avatars",
-            key="upload_path_input"
-        )
-        
-        st.divider()
-        
-        upsert_option = st.checkbox(
-            "Écraser si existant",
-            value=False,
-            help="Si activé, écrase les fichiers existants avec le même nom",
-            key="upsert_checkbox"
-        )
-        
-        # Bouton pour rafraîchir les buckets
-        if st.button("🔄 Rafraîchir les buckets", use_container_width=True, key="refresh_upload_buckets"):
-            st.cache_data.clear()
-            st.rerun()
-    
-    # Zone principale
-    if upload_bucket:
-        # Affichage du chemin de destination
-        destination_display = f"`{upload_bucket}`"
-        if upload_path:
-            destination_display += f" / `{upload_path}`"
-        st.markdown(f"**📍 Destination:** {destination_display}")
-        
-        st.divider()
-        
-        # Zone d'upload
-        st.subheader("📎 Sélectionnez vos fichiers")
-        
-        uploaded_files = st.file_uploader(
-            "Glissez-déposez vos fichiers ici ou cliquez pour parcourir",
-            accept_multiple_files=True,
-            help="Vous pouvez sélectionner plusieurs fichiers à la fois",
-            key="file_uploader"
-        )
-        
-        if uploaded_files:
-            st.divider()
-            st.subheader("📋 Fichiers sélectionnés")
-            
-            # Préparation des données pour l'aperçu
-            preview_data = []
-            for f in uploaded_files:
-                # Détermination du type MIME
-                mime_type, _ = mimetypes.guess_type(f.name)
-                if mime_type is None:
-                    mime_type = f.type if f.type else "application/octet-stream"
-                
-                # Construction du chemin final
-                if upload_path:
-                    final_path = f"{upload_path.strip('/')}/{f.name}"
-                else:
-                    final_path = f.name
-                
-                preview_data.append({
-                    "Nom": f.name,
-                    "Taille": format_file_size(f.size),
-                    "Type": mime_type,
-                    "Chemin final": final_path
+            file_data = []
+            for f in files:
+                file_data.append({
+                    "Nom": f.get("name", "N/A"),
+                    "Taille": f"{f.get('metadata', {}).get('size', 0) / 1024:.1f} KB" if f.get('metadata') else "N/A",
+                    "Créé": f.get("created_at", "N/A"),
+                    "Type": f.get("metadata", {}).get("mimetype", "N/A") if f.get("metadata") else "folder"
                 })
             
-            df_preview = pd.DataFrame(preview_data)
-            st.dataframe(
-                df_preview,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Nom": st.column_config.TextColumn("Nom du fichier", width="medium"),
-                    "Taille": st.column_config.TextColumn("Taille", width="small"),
-                    "Type": st.column_config.TextColumn("Type MIME", width="medium"),
-                    "Chemin final": st.column_config.TextColumn("Chemin de destination", width="large"),
-                }
-            )
-            
-            # Résumé
-            total_size = sum(f.size for f in uploaded_files)
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Fichiers", len(uploaded_files))
-            col2.metric("Taille totale", format_file_size(total_size))
-            col3.metric("Destination", upload_bucket)
-            
-            st.divider()
-            
-            # Bouton d'upload
-            col1, col2, col3 = st.columns([1, 2, 1])
-            with col2:
-                upload_button = st.button(
-                    "🚀 Lancer l'upload",
-                    type="primary",
-                    use_container_width=True,
-                    key="start_upload_btn"
-                )
-            
-            if upload_button:
-                st.divider()
-                st.subheader("📊 Progression de l'upload")
-                
-                progress_bar = st.progress(0)
-                status_container = st.container()
-                
-                success_count = 0
-                error_count = 0
-                results = []
-                
-                for i, uploaded_file in enumerate(uploaded_files):
-                    # Mise à jour de la progression
-                    progress = (i + 1) / len(uploaded_files)
-                    progress_bar.progress(progress)
-                    
-                    # Détermination du type MIME
-                    mime_type, _ = mimetypes.guess_type(uploaded_file.name)
-                    if mime_type is None:
-                        mime_type = uploaded_file.type if uploaded_file.type else "application/octet-stream"
-                    
-                    # Construction du chemin final
-                    if upload_path:
-                        final_path = f"{upload_path.strip('/')}/{uploaded_file.name}"
-                    else:
-                        final_path = uploaded_file.name
-                    
-                    try:
-                        # Lecture du contenu du fichier
-                        file_content = uploaded_file.getvalue()
-                        
-                        # Upload vers Supabase
-                        response = upload_file_to_supabase(
-                            bucket_name=upload_bucket,
-                            file_path=final_path,
-                            file_data=file_content,
-                            content_type=mime_type,
-                            upsert=upsert_option
-                        )
-                        
-                        success_count += 1
-                        results.append({
-                            "Fichier": uploaded_file.name,
-                            "Statut": "✅ Succès",
-                            "Chemin": final_path,
-                            "Message": "Upload réussi"
-                        })
-                        
-                    except Exception as e:
-                        error_count += 1
-                        error_msg = str(e)
-                        results.append({
-                            "Fichier": uploaded_file.name,
-                            "Statut": "❌ Erreur",
-                            "Chemin": final_path,
-                            "Message": error_msg
-                        })
-                
-                # Affichage des résultats
-                progress_bar.progress(1.0)
-                
-                st.divider()
-                st.subheader("📋 Résultats de l'upload")
-                
-                # Métriques finales
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Réussis", success_count, delta=None)
-                col2.metric("Échoués", error_count, delta=None)
-                col3.metric("Total", len(uploaded_files))
-                
-                # Tableau des résultats
-                df_results = pd.DataFrame(results)
-                st.dataframe(
-                    df_results,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "Fichier": st.column_config.TextColumn("Fichier", width="medium"),
-                        "Statut": st.column_config.TextColumn("Statut", width="small"),
-                        "Chemin": st.column_config.TextColumn("Chemin", width="medium"),
-                        "Message": st.column_config.TextColumn("Message", width="large"),
-                    }
-                )
-                
-                # Message de succès ou d'erreur global
-                if error_count == 0:
-                    st.success(f"🎉 Tous les fichiers ({success_count}) ont été uploadés avec succès!")
-                elif success_count == 0:
-                    st.error(f"❌ Tous les uploads ont échoué ({error_count} erreurs)")
-                else:
-                    st.warning(f"⚠️ Upload partiellement réussi: {success_count} succès, {error_count} erreurs")
-                
-                # Bouton pour voir les fichiers uploadés
-                st.divider()
-                if success_count > 0:
-                    st.info("💡 Utilisez l'onglet **📁 Storage** pour voir vos fichiers uploadés")
-        
+            st.dataframe(pd.DataFrame(file_data), use_container_width=True, hide_index=True)
         else:
-            # Zone d'information quand aucun fichier n'est sélectionné
-            st.info("👆 Sélectionnez un ou plusieurs fichiers à uploader")
+            st.info("Aucun fichier trouvé.")
             
-            # Informations utiles
-            with st.expander("ℹ️ Informations sur l'upload"):
-                st.markdown("""
-                **Fonctionnalités:**
-                - Upload de plusieurs fichiers simultanément
-                - Détection automatique du type MIME
-                - Option pour écraser les fichiers existants
-                - Suivi de la progression en temps réel
-                
-                **Conseils:**
-                - Vérifiez que le bucket de destination existe
-                - Assurez-vous d'avoir les permissions d'écriture sur le bucket
-                - Utilisez des chemins de dossiers pour organiser vos fichiers
-                
-                **Limites:**
-                - La taille maximale dépend de votre configuration Supabase
-                - Les fichiers très volumineux peuvent prendre du temps
-                """)
-    else:
-        st.info("👈 Sélectionnez un bucket de destination dans la barre latérale")
+    except Exception as e:
+        st.error(f"Erreur accès storage: {e}")
+        st.info("💡 Assurez-vous que le bucket existe et que vous avez les permissions.")
+
+# =============================================================================
+# TAB 6: UPLOAD
+# =============================================================================
+
+def render_upload_tab():
+    """Render the file upload tab."""
+    st.header("📤 Upload de Fichiers")
+    
+    supabase = get_supabase()
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("📁 Upload vers Supabase Storage")
+        
+        bucket = st.text_input("Bucket cible", value="uploads", key="upload_bucket")
+        folder = st.text_input("Dossier (optionnel)", value="", key="upload_folder")
+        
+        uploaded_file = st.file_uploader("Choisir un fichier", type=["csv", "xlsx", "json", "txt", "pdf"])
+        
+        if uploaded_file and supabase:
+            if st.button("⬆️ Uploader", type="primary"):
+                try:
+                    path = f"{folder}/{uploaded_file.name}" if folder else uploaded_file.name
+                    
+                    supabase.storage.from_(bucket).upload(
+                        path,
+                        uploaded_file.getvalue(),
+                        {"content-type": uploaded_file.type}
+                    )
+                    st.success(f"✅ Fichier uploadé: `{path}`")
+                except Exception as e:
+                    st.error(f"Erreur upload: {e}")
+    
+    with col2:
+        st.subheader("📊 Import CSV vers Table")
+        
+        csv_file = st.file_uploader("Fichier CSV", type=["csv"], key="csv_import")
+        target_table = st.selectbox("Table cible", get_table_list(), key="import_table")
+        
+        if csv_file:
+            df_preview = pd.read_csv(csv_file, nrows=5)
+            st.markdown("**Aperçu:**")
+            st.dataframe(df_preview, use_container_width=True, hide_index=True)
+            
+            if st.button("📥 Importer dans la table"):
+                try:
+                    csv_file.seek(0)
+                    df_full = pd.read_csv(csv_file)
+                    
+                    # Convert to records and insert
+                    records = df_full.to_dict(orient="records")
+                    
+                    if supabase:
+                        supabase.table(target_table).insert(records).execute()
+                        st.success(f"✅ {len(records)} lignes importées dans `{target_table}`")
+                except Exception as e:
+                    st.error(f"Erreur import: {e}")
+
+# =============================================================================
+# MAIN APP
+# =============================================================================
 
 def main():
-    st.title("🗃️ Supabase Viewer")
-    st.markdown("Visualisez et gérez vos données et fichiers Supabase")
+    """Main application entry point."""
     
-    # Création des onglets
-    tab1, tab2, tab3 = st.tabs(["📊 Tables", "📁 Storage", "📤 Upload"])
+    # Sidebar header
+    with st.sidebar:
+        st.image("https://www.primeanalytics.fr/wp-content/uploads/2023/01/logo-prime-analytics.png", width=200)
+        st.title("Data Quality")
+        st.caption("Powered by Alteryx + AI")
+        st.divider()
+    
+    # Main tabs
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "🏠 Dashboard",
+        "🤖 AI Corrections", 
+        "📋 Issues",
+        "📊 Tables",
+        "📁 Storage",
+        "📤 Upload"
+    ])
     
     with tab1:
-        render_tables_tab()
+        render_dashboard_tab()
     
     with tab2:
-        render_storage_tab()
+        render_corrections_tab()
     
     with tab3:
+        render_issues_tab()
+    
+    with tab4:
+        render_tables_tab()
+    
+    with tab5:
+        render_storage_tab()
+    
+    with tab6:
         render_upload_tab()
+    
+    # Footer
+    st.sidebar.divider()
+    st.sidebar.caption("© 2025 Prime Analytics")
+    st.sidebar.caption("v1.0.0")
 
 if __name__ == "__main__":
     main()
